@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+option csharp_namespace = "LlamaRuntime.Presentation.Grpc";
+package llama.v1;
+
+service Generator {
+  rpc Generate (GenerateRequest) returns (GenerateReply);
+  rpc EstimateTokens (EstimateTokensRequest) returns (EstimateTokensReply);
+}
+
+message GenerateRequest {
+  string request_id = 1;
+  string prompt = 2;
+}
+
+message GenerateReply {
+  string request_id = 1;
+  string result = 2;
+}
+
+message EstimateTokensRequest {
+  string prompt = 1;
+}
+
+message EstimateTokensReply {
+  int32 token_count = 1;
+  int32 context_size = 2;
+  int32 reserved_output_tokens = 3;
+  int32 max_allowed_input_tokens = 4;
+  bool fits = 5;
+}
