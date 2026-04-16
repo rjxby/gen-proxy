@@ -8,6 +8,12 @@ using System.Text.Json.Serialization;
 
 namespace GenProxy.StackRunner;
 
+internal static class StackRunnerDefaults
+{
+    public const string LlamaRuntimeVersion = "v0.1.2";
+    public const string LatestReleaseKeyword = "latest";
+}
+
 internal static class StackRunnerApplication
 {
     public static async Task<int> RunAsync(string[] args)
@@ -134,7 +140,7 @@ internal sealed class StackRunnerApplicationInstance(StackRunnerOptions options)
 
     private async Task<string> ResolveRuntimeVersionAsync(CancellationToken cancellationToken)
     {
-        if (!string.Equals(_options.LlamaRuntimeVersion, "latest", StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(_options.LlamaRuntimeVersion, StackRunnerDefaults.LatestReleaseKeyword, StringComparison.OrdinalIgnoreCase))
         {
             return _options.LlamaRuntimeVersion;
         }
@@ -578,7 +584,7 @@ internal sealed record StackRunnerOptions(
             SummarizerRuntimePidFile: Path.Combine(rootDir, ".runtime-run", "summarizer.pid"),
             LlamaRuntimeOwner: ReadEnvironment("LLAMA_RUNTIME_OWNER", "rjxby"),
             LlamaRuntimeRepo: ReadEnvironment("LLAMA_RUNTIME_REPO", "llama-runtime"),
-            LlamaRuntimeVersion: ReadEnvironment("LLAMA_RUNTIME_VERSION", "latest"),
+            LlamaRuntimeVersion: ReadEnvironment("LLAMA_RUNTIME_VERSION", StackRunnerDefaults.LlamaRuntimeVersion),
             PublicApiKey: ReadEnvironmentAny(["ApiKeys__Keys__0", "APIKEYS__KEYS__0"], "dev-local-key"),
             RuntimeApiKey: ReadEnvironment("LLAMA_RUNTIME_API_KEY", ReadEnvironment("LLAMA_RUNTIME_DEFAULT_API_KEY", "runtime-local-key")),
             GenerationRuntimePort: ReadEnvironmentInt("GENERATION_RUNTIME_PORT", 50051),

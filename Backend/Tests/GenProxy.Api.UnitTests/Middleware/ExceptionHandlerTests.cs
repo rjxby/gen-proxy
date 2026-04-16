@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using Moq;
+using System.Diagnostics;
 using Xunit;
 
 namespace GenProxy.Api.UnitTests;
@@ -59,5 +60,29 @@ public class ExceptionHandlerTests
         logger.Entries[0].Level.Should().Be(LogLevel.Warning);
         logger.Entries[0].Exception.Should().BeSameAs(exception);
         logger.Entries[0].Message.Should().Contain("Upstream runtime unavailable.");
+    }
+
+    [Fact]
+    public async Task TryHandleAsync_WhenActivityExists_UsesActivityTraceIdInProblemDetails()
+    {
+        var logger = new TestLogger<ExceptionHandler>();
+        var problemDetailsService = new Mock<IProblemDetailsService>();
+        ProblemDetailsContext? capturedContext = null;
+        problemDetailsService
+            .Setup(service => service.TryWriteAsync(It.IsAny<ProblemDetailsContext>()))
+            .Callback<ProblemDetailsContext>(context => capturedContext = context)
+            .Returns(ValueTask.FromResult(true));
+        var handler = new ExceptionHandler(logger, problemDetailsService.Object);
+        var httpContext = new DefaultHttpContext();
+        httpContext.TraceIdentifier = "http-trace-id";
+        var exception = new UpstreamRuntimeException("generation runtime offline");
+
+        using var activity = new Activity("test-request");
+        activity.Start();
+
+        await handler.TryHandleAsync(httpContext, exception, CancellationToken.None);
+
+        capturedContext.Should().NotBeNull();
+        capturedContext!.ProblemDetails.Extensions["trace_id"].Should().Be(activity.TraceId.ToString());
     }
 }

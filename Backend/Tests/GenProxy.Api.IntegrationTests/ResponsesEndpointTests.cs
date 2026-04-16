@@ -16,6 +16,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using GenProxy.Api.Host.Security;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace GenProxy.Api.IntegrationTests;
@@ -333,13 +334,56 @@ public class ResponsesEndpointTests
         response.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
+    [Fact]
+    public async Task PostResponses_EmitsCombinedHttpLogWithBodiesAndRedactsApiKeyValue()
+    {
+        var sink = new LogSink();
+
+        await using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(),
+            new FakePromptReducerRuntimeClient(),
+            configureLogging: logging =>
+            {
+                logging.ClearProviders();
+                logging.AddProvider(new SinkLoggerProvider(sink));
+                logging.SetMinimumLevel(LogLevel.Information);
+            },
+            configureSettings: settings =>
+            {
+                settings["Logging:LogLevel:Default"] = "Information";
+                settings["Logging:LogLevel:Microsoft.AspNetCore"] = "Warning";
+                settings["Logging:LogLevel:Microsoft.AspNetCore.HttpLogging.HttpLoggingMiddleware"] = "Information";
+            });
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "gpt-5.1",
+            input = "hello world"
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var httpLogs = sink.Entries
+            .Where(entry => entry.Category == "Microsoft.AspNetCore.HttpLogging.HttpLoggingMiddleware")
+            .ToList();
+
+        httpLogs.Should().ContainSingle();
+        httpLogs[0].Message.Should().Contain("\"input\":\"hello world\"");
+        httpLogs[0].Message.Should().Contain("\"output_text\":\"generated: hello world\"");
+        httpLogs[0].Message.Should().NotContain("test-api-key");
+    }
+
     private static WebApplicationFactory<Program> CreateFactory(
         IGenerationRuntimeClient generationRuntimeClient,
         IPromptReducerRuntimeClient? promptReducerRuntimeClient,
         bool usePromptReducerRuntime = true,
         string environmentName = "Testing",
         Action<Dictionary<string, string?>>? configureSettings = null,
-        Action<IServiceCollection>? configureServices = null)
+        Action<IServiceCollection>? configureServices = null,
+        Action<ILoggingBuilder>? configureLogging = null)
     {
         return new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder =>
@@ -356,6 +400,7 @@ public class ResponsesEndpointTests
                     configureSettings?.Invoke(settings);
                     configBuilder.AddInMemoryCollection(settings);
                 });
+                builder.ConfigureLogging(logging => configureLogging?.Invoke(logging));
                 builder.ConfigureTestServices(services =>
                 {
                     services.RemoveAll<IGenerationRuntimeClient>();
@@ -445,6 +490,53 @@ public class ResponsesEndpointTests
         public Task<LlamaGenerationResult> GenerateAsync(string requestId, string prompt, CancellationToken cancellationToken)
         {
             throw _exception;
+        }
+    }
+
+    private sealed class LogSink
+    {
+        public List<LogEntry> Entries { get; } = [];
+    }
+
+    private sealed record LogEntry(string Category, LogLevel Level, string Message);
+
+    private sealed class SinkLoggerProvider(LogSink sink) : ILoggerProvider
+    {
+        private readonly LogSink _sink = sink;
+
+        public ILogger CreateLogger(string categoryName) => new SinkLogger(categoryName, _sink);
+
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class SinkLogger(string categoryName, LogSink sink) : ILogger
+    {
+        private readonly string _categoryName = categoryName;
+        private readonly LogSink _sink = sink;
+
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => NullScope.Instance;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            _sink.Entries.Add(new LogEntry(_categoryName, logLevel, formatter(state, exception)));
+        }
+    }
+
+    private sealed class NullScope : IDisposable
+    {
+        public static readonly NullScope Instance = new();
+
+        public void Dispose()
+        {
         }
     }
 }

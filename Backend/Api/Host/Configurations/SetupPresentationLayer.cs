@@ -1,5 +1,7 @@
 ﻿using GenProxy.Api.Host.Middleware;
 using GenProxy.Api.Host.Validation;
+using Microsoft.AspNetCore.HttpLogging;
+using Microsoft.AspNetCore.Routing;
 
 namespace GenProxy.Api.Host.Configurations;
 
@@ -23,6 +25,28 @@ public static class SetupPresentationLayer
         services.AddSwagger();
         services.AddProblemDetails();
         services.AddExceptionHandler<ExceptionHandler>();
+        services.AddHttpLogging(options =>
+        {
+            options.LoggingFields = HttpLoggingFields.None;
+            options.CombineLogs = true;
+            options.RequestBodyLogLimit = 4096;
+            options.ResponseBodyLogLimit = 4096;
+
+            options.RequestHeaders.Clear();
+            options.RequestHeaders.Add("Content-Type");
+            options.RequestHeaders.Add("Content-Length");
+            options.RequestHeaders.Add("Accept");
+
+            options.ResponseHeaders.Clear();
+            options.ResponseHeaders.Add("Content-Type");
+            options.ResponseHeaders.Add("Content-Length");
+
+            options.MediaTypeOptions.Clear();
+            options.MediaTypeOptions.AddText("application/json");
+            options.MediaTypeOptions.AddText("application/problem+json");
+            options.MediaTypeOptions.AddText("text/plain");
+        });
+        services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
         services.ConfigureHttpJsonOptions(options =>
         {
             options.SerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.SnakeCaseLower;

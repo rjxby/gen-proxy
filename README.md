@@ -18,6 +18,8 @@ PromptReducerRuntime__Address=https://localhost:50052 \
 
 Defaults for request limits, runtime addresses, and prompt-reduction behavior are compiled into the binary. Outside Development, you still need to supply at least one API key through environment variables or another standard ASP.NET Core configuration source.
 
+Compatibility note: the current local stack workflow is pinned to `llama-runtime v0.1.2`.
+
 ## Authentication
 
 All protected requests must send the exact API key value in the `X-API-Key` header.
@@ -53,6 +55,7 @@ Request body:
 
 Current behavior:
 - `model` is required.
+- `model` is echoed back in the response and used for logs/metrics, but it does not currently select or route between different upstream runtimes.
 - `input` is required.
 - `max_output_tokens` is accepted for Responses API compatibility but currently ignored by the runtime.
 - `metadata` is accepted for Responses API compatibility but currently ignored by the runtime.
@@ -104,7 +107,7 @@ The host supports separate runtime settings for generation and an optional promp
 - `PromptReducerRuntime:ApiKey`
   Optional outbound `x-api-key` sent to the prompt-reducer runtime.
 - `PromptReduction:UsePromptReducerRuntime`
-  Boolean toggle for external prompt reduction. When `false`, `gen-proxy` skips the reducer runtime and truncates oversized prompts from the beginning until they fit the generation runtime budget.
+  Boolean toggle for external prompt reduction. When `false`, `gen-proxy` skips the reducer runtime and uses leading truncation as the only reduction strategy.
 
 Optional prompt-reduction prompt text can be configured in `PromptReduction:SummarizationPromptTemplate`.
 Runtime addresses must use `https://`.
@@ -131,7 +134,7 @@ Example:
 
 - `Backend/Api/Host` is the HTTP edge. Namespaces should mirror the folder layout for `Endpoints`, `Middleware`, `Security`, `Validation`, and `Configurations`.
 - Setup modules remain under `Backend/Api/Host/Configurations` and represent composition-root wiring, not service/domain logic.
-- Prompt reducers must declare explicit execution order through `IPromptReducer.Order`. Lower values run first; fallback reducers should use higher values.
+- Prompt reducers must declare explicit execution order through `IPromptReducer.Order`. Lower values run first, and the current pipeline stops at the first reducer that reports a reduction. If the reduced prompt still exceeds budget after re-estimation, the request fails with `422` rather than continuing to later reducers.
 - Unit and integration tests are CI-grade checks. `GenProxy.StackRunner` provides local smoke verification modes and should not replace layer-focused automated tests.
 
 ## Local Development
@@ -175,7 +178,7 @@ make stack-run
 ```
 
 `make stack-run` will:
-- resolve the latest `llama-runtime` release unless `LLAMA_RUNTIME_VERSION` is set
+- download and use `llama-runtime v0.1.2` by default unless `LLAMA_RUNTIME_VERSION` is set explicitly
 - cache release artifacts in `.runtime-cache/`
 - write runtime logs to `.runtime-logs/`
 - write PID files and runtime state to `.runtime-run/`
@@ -237,6 +240,8 @@ SUMMARIZER_WORKER_COUNT=1 \
 API_STARTUP_TIMEOUT=60 \
 make stack-run
 ```
+
+Set `LLAMA_RUNTIME_VERSION` only when you intentionally want to override the tested default. Releases in this line are validated against `v0.1.2`.
 
 Optional smoke overrides:
 

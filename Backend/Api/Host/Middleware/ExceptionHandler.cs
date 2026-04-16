@@ -2,6 +2,7 @@ using GenProxy.Api.Integrations.Contracts;
 using GenProxy.Api.Services.Contracts;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
+using System.Diagnostics;
 
 namespace GenProxy.Api.Host.Middleware;
 
@@ -16,6 +17,11 @@ public sealed class ExceptionHandler(
     {
         var (statusCode, title, detail, logLevel) = exception switch
         {
+            BadHttpRequestException => (
+                StatusCodes.Status400BadRequest,
+                "Invalid request body.",
+                "The request body could not be read as valid JSON.",
+                LogLevel.Warning),
             PromptBudgetExceededException ex => (
                 StatusCodes.Status422UnprocessableEntity,
                 "Prompt exceeds token budget.",
@@ -63,16 +69,19 @@ public sealed class ExceptionHandler(
 
         httpContext.Response.StatusCode = statusCode;
 
+        var problemDetails = new ProblemDetails
+        {
+            Title = title,
+            Detail = detail,
+            Status = statusCode,
+            Type = $"https://httpstatuses.com/{statusCode}"
+        };
+        problemDetails.Extensions["trace_id"] = Activity.Current?.TraceId.ToString() ?? httpContext.TraceIdentifier;
+
         return await _problemDetailsService.TryWriteAsync(new ProblemDetailsContext
         {
             HttpContext = httpContext,
-            ProblemDetails = new ProblemDetails
-            {
-                Title = title,
-                Detail = detail,
-                Status = statusCode,
-                Type = $"https://httpstatuses.com/{statusCode}"
-            },
+            ProblemDetails = problemDetails,
             Exception = exception
         });
     }
