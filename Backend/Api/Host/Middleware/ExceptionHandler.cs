@@ -22,22 +22,37 @@ public sealed class ExceptionHandler(
                 "Invalid request body.",
                 "The request body could not be read as valid JSON.",
                 LogLevel.Warning),
+            ResponseFormatNotSupportedException ex => (
+                StatusCodes.Status400BadRequest,
+                "Unsupported response format.",
+                ex.Message,
+                LogLevel.Information),
             PromptBudgetExceededException ex => (
                 StatusCodes.Status422UnprocessableEntity,
                 "Prompt exceeds token budget.",
                 ex.Message,
                 LogLevel.Information),
+            StructuredOutputNotSatisfiedException ex => (
+                StatusCodes.Status502BadGateway,
+                "Structured output requirement not satisfied.",
+                ex.Message,
+                LogLevel.Warning),
             PromptReductionFailedException ex => (
                 StatusCodes.Status502BadGateway,
                 "Prompt reduction failed.",
                 ex.Message,
                 LogLevel.Warning),
-            UpstreamPromptBudgetExceededException ex => (
+            LlamaRuntimePromptBudgetExceededException ex => (
                 StatusCodes.Status422UnprocessableEntity,
                 "Prompt exceeds token budget.",
                 ex.Message,
                 LogLevel.Information),
-            UpstreamRuntimeException ex => (
+            LlamaRuntimeUnsupportedGenerationOverridesException ex => (
+                StatusCodes.Status400BadRequest,
+                "Unsupported generation overrides.",
+                ex.Message,
+                LogLevel.Information),
+            LlamaRuntimeCallException ex => (
                 StatusCodes.Status503ServiceUnavailable,
                 "Upstream runtime unavailable.",
                 ex.Message,
@@ -58,7 +73,7 @@ public sealed class ExceptionHandler(
         {
             _logger.LogError(exception, "Unhandled request failure.");
         }
-        else if (exception is PromptBudgetExceededException or UpstreamPromptBudgetExceededException)
+        else if (exception is PromptBudgetExceededException or LlamaRuntimePromptBudgetExceededException or LlamaRuntimeUnsupportedGenerationOverridesException or ResponseFormatNotSupportedException)
         {
             _logger.Log(logLevel, "{Title} {Detail}", title, detail);
         }

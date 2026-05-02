@@ -8,6 +8,8 @@ internal interface IGrpcLlamaTransport
 {
     Task<EstimateTokensReply> EstimateTokensAsync(EstimateTokensRequest request, CancellationToken cancellationToken);
 
+    Task<GetCapabilitiesReply> GetCapabilitiesAsync(GetCapabilitiesRequest request, CancellationToken cancellationToken);
+
     Task<GenerateReply> GenerateAsync(GenerateRequest request, CancellationToken cancellationToken);
 }
 
@@ -54,6 +56,11 @@ internal sealed class GrpcLlamaTransport : IGrpcLlamaTransport
     public async Task<EstimateTokensReply> EstimateTokensAsync(EstimateTokensRequest request, CancellationToken cancellationToken)
     {
         return await _client.EstimateTokensAsync(request, cancellationToken: cancellationToken);
+    }
+
+    public async Task<GetCapabilitiesReply> GetCapabilitiesAsync(GetCapabilitiesRequest request, CancellationToken cancellationToken)
+    {
+        return await _client.GetCapabilitiesAsync(request, cancellationToken: cancellationToken);
     }
 
     public async Task<GenerateReply> GenerateAsync(GenerateRequest request, CancellationToken cancellationToken)

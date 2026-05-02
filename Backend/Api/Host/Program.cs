@@ -5,7 +5,7 @@ using GenProxy.Api.Host.Middleware;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddSecurity(builder.Configuration, builder.Environment);
-builder.Services.AddIntegrationLayer(builder.Configuration, builder.Environment);
+builder.Services.AddIntegrationLayer(builder.Configuration);
 builder.Services.AddServiceLayer(builder.Configuration);
 builder.Services.AddPresentationLayer(builder.Configuration);
 

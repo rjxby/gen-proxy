@@ -1,4 +1,5 @@
-﻿using Microsoft.OpenApi;
+using GenProxy.Api.Host.OpenApi;
+using Microsoft.OpenApi;
 
 namespace GenProxy.Api.Host.Configurations;
 
@@ -16,8 +17,7 @@ public static class SetupSwagger
                 Description = "Public Responses API backed by llama runtime token budgeting and generation."
             });
 
-            c.DescribeAllParametersInCamelCase();
-            c.OrderActionsBy(x => x.RelativePath);
+            c.SchemaFilter<PropertyOpenApiSchemaFilter>();
         });
 
         return services;

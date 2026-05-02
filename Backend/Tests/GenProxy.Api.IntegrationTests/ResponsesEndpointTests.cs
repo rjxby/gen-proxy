@@ -17,6 +17,7 @@ using Microsoft.Extensions.DependencyInjection;
 using GenProxy.Api.Host.Security;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using GenProxy.Api.Services.Contracts.Models;
 using Xunit;
 
 namespace GenProxy.Api.IntegrationTests;
@@ -35,20 +36,669 @@ public class ResponsesEndpointTests
 
         var response = await client.PostAsJsonAsync("/v1/responses", new
         {
-            model = "gpt-5.1",
-            input = "hello world",
+            model = "stories15m",
+            input = StructuredInput("hello world"),
+            max_output_tokens = 64
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
+        var payload = await response.Content.ReadFromJsonAsync<ResponsesApiResponse>();
+        payload.Should().NotBeNull();
+        payload!.Object.Should().Be(ResponseObjectType.Response);
+        payload.Model.Should().Be("runtime-model");
+        payload.Status.Should().Be(ResponseStatus.Completed);
+        payload.Output[0].Type.Should().Be(ResponseItemType.Message);
+        payload.Output[0].Status.Should().Be(ResponseStatus.Completed);
+        payload.Output[0].Role.Should().Be(ResponseRole.Assistant);
+        payload.Output[0].Content[0].Type.Should().Be(ResponseContentPartType.OutputText);
+        payload.OutputText.Should().Be("generated: hello world");
+        payload.Usage.InputTokens.Should().Be(42);
+        payload.Usage.OutputTokens.Should().Be(7);
+        payload.Usage.TotalTokens.Should().Be(49);
+        payload.CreatedAt.Should().BePositive();
+    }
+
+    [Fact]
+    public async Task SwaggerDocument_UsesWireEnumStrings()
+    {
+        await using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(),
+            new FakePromptReducerRuntimeClient(),
+            environmentName: Environments.Development);
+
+        var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/swagger/v1/swagger.json");
+        request.Headers.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        using var response = await client.SendAsync(request);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var document = JsonNode.Parse(await response.Content.ReadAsStringAsync());
+        document.Should().NotBeNull();
+
+        var requestSchema = ResolveSchema(
+            document!,
+            document!["paths"]!["/v1/responses"]!["post"]!["requestBody"]!["content"]!["application/json"]!["schema"]);
+        requestSchema.Should().NotBeNull();
+
+        var requiredRequestProperties = requestSchema!["required"]!
+            .AsArray()
+            .Select(value => value!.GetValue<string>())
+            .ToList();
+        requiredRequestProperties.Should().Contain("model");
+        requiredRequestProperties.Should().Contain("input");
+
+        var responseFormatSchema = ResolveSchema(document!, requestSchema["properties"]!["response_format"]);
+        requestSchema["properties"]!["response_format"]!["description"]!
+            .GetValue<string>()
+            .Should()
+            .Be("Optional response format override. When provided, type is required.");
+
+        responseFormatSchema["required"]!
+            .AsArray()
+            .Select(value => value!.GetValue<string>())
+            .Should()
+            .ContainSingle("type");
+
+        responseFormatSchema["properties"]!["type"]!["enum"]!
+            .AsArray()
+            .Select(value => value!.GetValue<string>())
+            .Should()
+            .Equal("text", "json_object");
+
+        var inputSchema = requestSchema["properties"]!["input"];
+        inputSchema.Should().NotBeNull();
+        inputSchema!["oneOf"].Should().BeNull();
+        inputSchema["type"]!.GetValue<string>().Should().Be("array");
+        inputSchema["minItems"]!.GetValue<int>().Should().Be(1);
+        inputSchema["maxItems"]!.GetValue<int>().Should().Be(1);
+
+        var inputItemSchema = ResolveSchema(document!, inputSchema["items"]);
+        inputItemSchema["properties"]!["type"]!["enum"]![0]!.GetValue<string>().Should().Be("message");
+        inputItemSchema["properties"]!["role"]!["enum"]![0]!.GetValue<string>().Should().Be("user");
+        inputItemSchema["required"]!
+            .AsArray()
+            .Select(value => value!.GetValue<string>())
+            .Should()
+            .BeEquivalentTo(["type", "role", "content"]);
+
+        var contentSchema = inputItemSchema["properties"]!["content"]!;
+        contentSchema["minItems"]!.GetValue<int>().Should().Be(1);
+        var contentItemSchema = ResolveSchema(document!, contentSchema["items"]);
+        contentItemSchema["required"]!
+            .AsArray()
+            .Select(value => value!.GetValue<string>())
+            .Should()
+            .BeEquivalentTo(["type", "text"]);
+        contentItemSchema["properties"]!["type"]!["enum"]![0]!
+            .GetValue<string>()
+            .Should()
+            .Be("input_text");
+        contentItemSchema["properties"]!["text"]!["description"]!
+            .GetValue<string>()
+            .Should()
+            .Be("Must be a non-empty string.");
+    }
+
+    [Fact]
+    public async Task PostResponses_WithStructuredMessageInput_ReturnsResponsesCompatibleResponse()
+    {
+        var generationRuntimeClient = new FakeGenerationRuntimeClient();
+        await using var factory = CreateFactory(
+            generationRuntimeClient,
+            new FakePromptReducerRuntimeClient());
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = new object[]
+            {
+                new
+                {
+                    type = "message",
+                    role = "user",
+                    content = new object[]
+                    {
+                        new
+                        {
+                            type = "input_text",
+                            text = "hello world"
+                        }
+                    }
+                }
+            }
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        generationRuntimeClient.LastPrompt.Should().Be("hello world");
+        var payload = await response.Content.ReadFromJsonAsync<ResponsesApiResponse>();
+        payload.Should().NotBeNull();
+        payload!.OutputText.Should().Be("generated: hello world");
+    }
+
+    [Fact]
+    public async Task PostResponses_WithStructuredMessageInputParts_JoinsThemWithNewLines()
+    {
+        var generationRuntimeClient = new FakeGenerationRuntimeClient();
+        await using var factory = CreateFactory(
+            generationRuntimeClient,
+            new FakePromptReducerRuntimeClient());
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = new object[]
+            {
+                new
+                {
+                    type = "message",
+                    role = "user",
+                    content = new object[]
+                    {
+                        new
+                        {
+                            type = "input_text",
+                            text = "hello"
+                        },
+                        new
+                        {
+                            type = "input_text",
+                            text = "world"
+                        }
+                    }
+                }
+            }
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        generationRuntimeClient.LastPrompt.Should().Be("hello\nworld");
+    }
+
+    [Fact]
+    public async Task PostResponses_WithTopLevelStringInput_ReturnsValidationProblem()
+    {
+        await using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(),
+            new FakePromptReducerRuntimeClient());
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = "hello world"
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task PostResponses_WithJsonObjectResponseFormatAndSupportedRuntime_ReturnsResponse()
+    {
+        await using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(),
+            new FakePromptReducerRuntimeClient());
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = StructuredInput("return valid json"),
+            response_format = new
+            {
+                type = "json_object"
+            },
             max_output_tokens = 64
         });
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var payload = await response.Content.ReadFromJsonAsync<ResponsesApiResponse>();
         payload.Should().NotBeNull();
-        payload!.Object.Should().Be("response");
-        payload.Model.Should().Be("gpt-5.1");
-        payload.OutputText.Should().Be("generated: hello world");
-        payload.Usage.OutputTokens.Should().BeNull();
-        payload.Usage.TotalTokens.Should().BeNull();
-        payload.CreatedAt.Should().BePositive();
+        payload!.OutputText.Should().Be("{\"result\":\"return valid json\"}");
+    }
+
+    [Fact]
+    public async Task PostResponses_WhenPromptReducerRuntimeDisabled_DoesNotRequireReducerClientOrAddress()
+    {
+        await using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(),
+            promptReducerRuntimeClient: null,
+            promptReducerRuntimeEnabled: false,
+            promptReducerRuntimeAddress: string.Empty);
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = StructuredInput("hello world")
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
+        var payload = await response.Content.ReadFromJsonAsync<ResponsesApiResponse>();
+        payload.Should().NotBeNull();
+        payload!.OutputText.Should().Be("generated: hello world");
+    }
+
+    [Fact]
+    public async Task PostResponses_ForwardsTemperatureAndTopPToGenerationRuntime()
+    {
+        var generationRuntimeClient = new FakeGenerationRuntimeClient();
+        await using var factory = CreateFactory(
+            generationRuntimeClient,
+            new FakePromptReducerRuntimeClient());
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = StructuredInput("hello world"),
+            temperature = 0.25,
+            top_p = 0.8,
+            max_output_tokens = 64
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        generationRuntimeClient.LastGenerationOptions.Should().NotBeNull();
+        generationRuntimeClient.LastGenerationOptions!.Temperature.Should().BeApproximately(0.25f, 0.001f);
+        generationRuntimeClient.LastGenerationOptions.TopP.Should().BeApproximately(0.8f, 0.001f);
+        generationRuntimeClient.LastGenerationOptions.MaxOutputTokens.Should().Be(64);
+    }
+
+    [Fact]
+    public async Task PostResponses_WhenResponseFormatTypeIsUnknown_ReturnsValidationProblem()
+    {
+        await using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(),
+            new FakePromptReducerRuntimeClient());
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = StructuredInput("hello world"),
+            response_format = new
+            {
+                type = "xml"
+            }
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();
+        problem.Should().NotBeNull();
+        problem!.Errors.Should().ContainKey("response_format.type");
+    }
+
+    [Fact]
+    public async Task PostResponses_WhenStructuredInputRoleIsNotUser_ReturnsValidationProblem()
+    {
+        await using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(),
+            new FakePromptReducerRuntimeClient());
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = new object[]
+            {
+                new
+                {
+                    type = "message",
+                    role = "assistant",
+                    content = new object[]
+                    {
+                        new
+                        {
+                            type = "input_text",
+                            text = "hello world"
+                        }
+                    }
+                }
+            }
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();
+        problem.Should().NotBeNull();
+        problem!.Errors.Should().ContainKey("input[0].role");
+    }
+
+    [Fact]
+    public async Task PostResponses_WhenStructuredInputContainsMultipleMessages_ReturnsValidationProblem()
+    {
+        await using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(),
+            new FakePromptReducerRuntimeClient());
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = new object[]
+            {
+                new
+                {
+                    type = "message",
+                    role = "user",
+                    content = new object[]
+                    {
+                        new
+                        {
+                            type = "input_text",
+                            text = "hello"
+                        }
+                    }
+                },
+                new
+                {
+                    type = "message",
+                    role = "user",
+                    content = new object[]
+                    {
+                        new
+                        {
+                            type = "input_text",
+                            text = "world"
+                        }
+                    }
+                }
+            }
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();
+        problem.Should().NotBeNull();
+        problem!.Errors.Should().ContainKey("input");
+    }
+
+    [Fact]
+    public async Task PostResponses_WhenStructuredInputContentTypeIsUnsupported_ReturnsValidationProblem()
+    {
+        await using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(),
+            new FakePromptReducerRuntimeClient());
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = new object[]
+            {
+                new
+                {
+                    type = "message",
+                    role = "user",
+                    content = new object[]
+                    {
+                        new
+                        {
+                            type = "output_text",
+                            text = "hello world"
+                        }
+                    }
+                }
+            }
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();
+        problem.Should().NotBeNull();
+        problem!.Errors.Should().ContainKey("input[0].content[0].type");
+    }
+
+    [Fact]
+    public async Task PostResponses_WhenToolsProvided_ReturnsValidationProblem()
+    {
+        await using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(),
+            new FakePromptReducerRuntimeClient());
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = StructuredInput("hello world"),
+            tools = new object[]
+            {
+                new
+                {
+                    type = "function",
+                    name = "read_file"
+                }
+            }
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();
+        problem.Should().NotBeNull();
+        problem!.Errors.Should().ContainKey("tools");
+    }
+
+    [Fact]
+    public async Task PostResponses_WhenToolChoiceProvided_ReturnsValidationProblem()
+    {
+        await using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(),
+            new FakePromptReducerRuntimeClient());
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = StructuredInput("hello world"),
+            tool_choice = new
+            {
+                type = "auto"
+            }
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();
+        problem.Should().NotBeNull();
+        problem!.Errors.Should().ContainKey("tool_choice");
+    }
+
+    [Fact]
+    public async Task PostResponses_WhenStreamEnabled_ReturnsValidationProblem()
+    {
+        await using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(),
+            new FakePromptReducerRuntimeClient());
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = StructuredInput("hello world"),
+            stream = true
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();
+        problem.Should().NotBeNull();
+        problem!.Errors.Should().ContainKey("stream");
+    }
+
+    [Fact]
+    public async Task PostResponses_WhenJsonObjectResponseFormatIsUnsupported_ReturnsBadRequest()
+    {
+        await using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(supportsJsonObjectOutput: false),
+            new FakePromptReducerRuntimeClient());
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = StructuredInput("hello world"),
+            response_format = new
+            {
+                type = "json_object"
+            }
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+        problem.Should().NotBeNull();
+        problem!.Title.Should().Be("Unsupported response format.");
+    }
+
+    [Fact]
+    public async Task PostResponses_WhenStructuredOutputRequirementIsNotSatisfied_ReturnsBadGateway()
+    {
+        await using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(jsonObjectStructuredOutputSatisfied: false),
+            new FakePromptReducerRuntimeClient());
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = StructuredInput("hello world"),
+            response_format = new
+            {
+                type = "json_object"
+            }
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadGateway);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+        problem.Should().NotBeNull();
+        problem!.Title.Should().Be("Structured output requirement not satisfied.");
+    }
+
+    [Fact]
+    public async Task PostResponses_WhenJsonObjectRuntimeTraceIsMissing_ReturnsBadGateway()
+    {
+        await using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(includeJsonObjectRuntimeTrace: false),
+            new FakePromptReducerRuntimeClient());
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = StructuredInput("hello world"),
+            response_format = new
+            {
+                type = "json_object"
+            }
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadGateway);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+        problem.Should().NotBeNull();
+        problem!.Title.Should().Be("Structured output requirement not satisfied.");
+    }
+
+    [Fact]
+    public async Task PostResponses_WhenJsonObjectStructuredOutputWasNotApplied_ReturnsBadGateway()
+    {
+        await using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(jsonObjectStructuredOutputApplied: false),
+            new FakePromptReducerRuntimeClient());
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = StructuredInput("hello world"),
+            response_format = new
+            {
+                type = "json_object"
+            }
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadGateway);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+        problem.Should().NotBeNull();
+        problem!.Title.Should().Be("Structured output requirement not satisfied.");
+    }
+
+    [Fact]
+    public async Task PostResponses_WhenJsonObjectOutputIsNotValidJson_ReturnsBadGateway()
+    {
+        await using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(jsonObjectContent: "not-json"),
+            new FakePromptReducerRuntimeClient());
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = StructuredInput("hello world"),
+            response_format = new
+            {
+                type = "json_object"
+            }
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadGateway);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+        problem.Should().NotBeNull();
+        problem!.Title.Should().Be("Structured output requirement not satisfied.");
+    }
+
+    [Fact]
+    public async Task PostResponses_WhenJsonObjectOutputIsNotAnObject_ReturnsBadGateway()
+    {
+        await using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(jsonObjectContent: "[1,2,3]"),
+            new FakePromptReducerRuntimeClient());
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = StructuredInput("hello world"),
+            response_format = new
+            {
+                type = "json_object"
+            }
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadGateway);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+        problem.Should().NotBeNull();
+        problem!.Title.Should().Be("Structured output requirement not satisfied.");
     }
 
     [Fact]
@@ -61,8 +711,8 @@ public class ResponsesEndpointTests
         var client = factory.CreateClient();
         var response = await client.PostAsJsonAsync("/v1/responses", new
         {
-            model = "gpt-5.1",
-            input = "hello world"
+            model = "stories15m",
+            input = StructuredInput("hello world")
         });
 
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
@@ -80,8 +730,8 @@ public class ResponsesEndpointTests
 
         var response = await client.PostAsJsonAsync("/v1/responses", new
         {
-            model = "gpt-5.1",
-            input = "hello world"
+            model = "stories15m",
+            input = StructuredInput("hello world")
         });
 
         response.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
@@ -104,7 +754,7 @@ public class ResponsesEndpointTests
         var response = await client.PostAsJsonAsync("/v1/responses", new
         {
             model = "",
-            input = ""
+            input = StructuredInput("hello")
         });
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
@@ -122,8 +772,8 @@ public class ResponsesEndpointTests
 
         var response = await client.PostAsJsonAsync("/v1/responses", new
         {
-            model = "gpt-5.1",
-            input = new string('a', 65537)
+            model = "stories15m",
+            input = StructuredInput(new string('a', 65537))
         });
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
@@ -147,8 +797,8 @@ public class ResponsesEndpointTests
 
         var response = await client.PostAsJsonAsync("/v1/responses", new
         {
-            model = "gpt-5.1",
-            input = "hello world",
+            model = "stories15m",
+            input = StructuredInput("hello world"),
             metadata
         });
 
@@ -170,8 +820,8 @@ public class ResponsesEndpointTests
         {
             Content = JsonContent.Create(new
             {
-                model = "gpt-5.1",
-                input = new string('a', 140000)
+                model = "stories15m",
+                input = StructuredInput(new string('a', 140000))
             })
         };
         request.Headers.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
@@ -187,15 +837,15 @@ public class ResponsesEndpointTests
         await using var factory = CreateFactory(
             new FakeGenerationRuntimeClient(truncatedPrompt: "lloworld", oversizedPrompt: "helloworld"),
             promptReducerRuntimeClient: null,
-            usePromptReducerRuntime: false);
+            promptReducerRuntimeEnabled: false);
 
         var client = factory.CreateClient();
         client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
 
         var response = await client.PostAsJsonAsync("/v1/responses", new
         {
-            model = "gpt-5.1",
-            input = "helloworld"
+            model = "stories15m",
+            input = StructuredInput("helloworld")
         });
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -208,7 +858,7 @@ public class ResponsesEndpointTests
     public async Task PostResponses_WhenGenerationRuntimeUnavailable_ReturnsServiceUnavailableProblem()
     {
         await using var factory = CreateFactory(
-            new ThrowingGenerationRuntimeClient(new UpstreamRuntimeException("generation runtime offline")),
+            new ThrowingGenerationRuntimeClient(new LlamaRuntimeCallException("generation runtime offline")),
             new FakePromptReducerRuntimeClient());
 
         var client = factory.CreateClient();
@@ -216,8 +866,8 @@ public class ResponsesEndpointTests
 
         var response = await client.PostAsJsonAsync("/v1/responses", new
         {
-            model = "gpt-5.1",
-            input = "hello world"
+            model = "stories15m",
+            input = StructuredInput("hello world")
         });
 
         response.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
@@ -227,20 +877,46 @@ public class ResponsesEndpointTests
     }
 
     [Fact]
-    public async Task PostResponses_WhenReducerRuntimeRejectsOversizedReductionPrompt_ReturnsUnprocessableEntity()
+    public async Task PostResponses_WhenGenerationRuntimeRejectsGenerationOverrides_ReturnsBadRequestProblem()
     {
         await using var factory = CreateFactory(
-            new FakeGenerationRuntimeClient(fitsAfterReduction: false, oversizedPrompt: "hello world"),
-            new ThrowingPromptReducerRuntimeClient(
-                new UpstreamPromptBudgetExceededException("Prompt exceeds input budget: 6250 tokens > 3584 allowed.")));
+            new ThrowingGenerationRuntimeClient(
+                new LlamaRuntimeUnsupportedGenerationOverridesException(
+                    "Request-level generation overrides are not supported by this runtime yet. Omit Generation to use runtime defaults.")),
+            new FakePromptReducerRuntimeClient());
 
         var client = factory.CreateClient();
         client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
 
         var response = await client.PostAsJsonAsync("/v1/responses", new
         {
-            model = "gpt-5.1",
-            input = "hello world"
+            model = "stories15m",
+            input = StructuredInput("hello world"),
+            temperature = 0.25
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+        problem.Should().NotBeNull();
+        problem!.Title.Should().Be("Unsupported generation overrides.");
+        problem.Detail.Should().Contain("Request-level generation overrides are not supported");
+    }
+
+    [Fact]
+    public async Task PostResponses_WhenReducerRuntimeRejectsOversizedReductionPrompt_ReturnsUnprocessableEntity()
+    {
+        await using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(fitsAfterReduction: false, oversizedPrompt: "hello world"),
+            new ThrowingPromptReducerRuntimeClient(
+                new LlamaRuntimePromptBudgetExceededException("Prompt exceeds input budget: 6250 tokens > 3584 allowed.")));
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = StructuredInput("hello world")
         });
 
         response.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
@@ -293,6 +969,60 @@ public class ResponsesEndpointTests
     }
 
     [Fact]
+    public void PostResponses_WithInvalidPromptReducerRuntimeAddress_AllowsStartupWhenReducerRuntimeDisabled()
+    {
+        using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(),
+            promptReducerRuntimeClient: null,
+            promptReducerRuntimeEnabled: false,
+            promptReducerRuntimeAddress: "not-a-valid-uri");
+
+        var act = () => factory.CreateClient();
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void PostResponses_WithBlankPromptReducerRuntimeAddress_AllowsStartupWhenReducerRuntimeDisabled()
+    {
+        using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(),
+            promptReducerRuntimeClient: null,
+            promptReducerRuntimeEnabled: false,
+            promptReducerRuntimeAddress: string.Empty);
+
+        var act = () => factory.CreateClient();
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void PostResponses_WithInvalidPromptReducerRuntimeAddress_FailsStartupValidationWhenReducerRuntimeEnabled()
+    {
+        using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(),
+            new FakePromptReducerRuntimeClient(),
+            promptReducerRuntimeAddress: "not-a-valid-uri");
+
+        var act = () => factory.CreateClient();
+
+        act.Should().Throw<OptionsValidationException>();
+    }
+
+    [Fact]
+    public void PostResponses_WithPlaintextPromptReducerRuntimeAddress_FailsStartupValidationWhenReducerRuntimeEnabled()
+    {
+        using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(),
+            new FakePromptReducerRuntimeClient(),
+            promptReducerRuntimeAddress: "http://localhost:50052");
+
+        var act = () => factory.CreateClient();
+
+        act.Should().Throw<OptionsValidationException>();
+    }
+
+    [Fact]
     public void PostResponses_WithoutConfiguredApiKeys_FailsStartupValidation()
     {
         using var factory = CreateFactory(
@@ -327,15 +1057,15 @@ public class ResponsesEndpointTests
         var client = factory.CreateClient();
         var response = await client.PostAsJsonAsync("/v1/responses", new
         {
-            model = "gpt-5.1",
-            input = "hello world"
+            model = "stories15m",
+            input = StructuredInput("hello world")
         });
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
     [Fact]
-    public async Task PostResponses_EmitsCombinedHttpLogWithBodiesAndRedactsApiKeyValue()
+    public async Task PostResponses_EmitsCombinedHttpLogWithoutBodiesByDefault()
     {
         var sink = new LogSink();
 
@@ -360,26 +1090,122 @@ public class ResponsesEndpointTests
 
         var response = await client.PostAsJsonAsync("/v1/responses", new
         {
-            model = "gpt-5.1",
-            input = "hello world"
+            model = "stories15m",
+            input = StructuredInput("hello world")
         });
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        var httpLogs = sink.Entries
-            .Where(entry => entry.Category == "Microsoft.AspNetCore.HttpLogging.HttpLoggingMiddleware")
-            .ToList();
+        var httpLogMessage = GetSingleHttpLogMessage(sink);
+        httpLogMessage.Should().Contain("POST");
+        httpLogMessage.Should().Contain("/v1/responses");
+        httpLogMessage.Should().Contain("200");
+        httpLogMessage.Should().NotContain("\"text\":\"hello world\"");
+        httpLogMessage.Should().NotContain("\"output_text\":\"generated: hello world\"");
+        httpLogMessage.Should().NotContain("test-api-key");
+    }
 
-        httpLogs.Should().ContainSingle();
-        httpLogs[0].Message.Should().Contain("\"input\":\"hello world\"");
-        httpLogs[0].Message.Should().Contain("\"output_text\":\"generated: hello world\"");
-        httpLogs[0].Message.Should().NotContain("test-api-key");
+    [Fact]
+    public async Task PostResponses_WhenBodyLoggingEnabled_EmitsCombinedHttpLogWithBodies()
+    {
+        var sink = new LogSink();
+
+        await using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(),
+            new FakePromptReducerRuntimeClient(),
+            configureLogging: logging =>
+            {
+                logging.ClearProviders();
+                logging.AddProvider(new SinkLoggerProvider(sink));
+                logging.SetMinimumLevel(LogLevel.Information);
+            },
+            configureSettings: settings =>
+            {
+                settings["Logging:LogLevel:Default"] = "Information";
+                settings["Logging:LogLevel:Microsoft.AspNetCore"] = "Warning";
+                settings["Logging:LogLevel:Microsoft.AspNetCore.HttpLogging.HttpLoggingMiddleware"] = "Information";
+                settings["ResponsesLogging:LogBodies"] = "true";
+            });
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = StructuredInput("hello world")
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var httpLogMessage = GetSingleHttpLogMessage(sink);
+        httpLogMessage.Should().Contain("\"text\":\"hello world\"");
+        httpLogMessage.Should().Contain("\"output_text\":\"generated: hello world\"");
+        httpLogMessage.Should().NotContain("test-api-key");
+    }
+
+    [Fact]
+    public async Task PostResponses_WhenRequestRejected_DoesNotLogBodyByDefault()
+    {
+        var sink = new LogSink();
+
+        await using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(),
+            new FakePromptReducerRuntimeClient(),
+            configureLogging: logging =>
+            {
+                logging.ClearProviders();
+                logging.AddProvider(new SinkLoggerProvider(sink));
+                logging.SetMinimumLevel(LogLevel.Information);
+            },
+            configureSettings: settings =>
+            {
+                settings["Logging:LogLevel:Default"] = "Information";
+                settings["Logging:LogLevel:Microsoft.AspNetCore"] = "Warning";
+                settings["Logging:LogLevel:Microsoft.AspNetCore.HttpLogging.HttpLoggingMiddleware"] = "Information";
+            });
+
+        var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = StructuredInput("hello world")
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+
+        var httpLogMessage = GetSingleHttpLogMessage(sink);
+        httpLogMessage.Should().Contain("POST");
+        httpLogMessage.Should().Contain("/v1/responses");
+        httpLogMessage.Should().Contain("401");
+        httpLogMessage.Should().NotContain("\"text\":\"hello world\"");
+    }
+
+    private static object[] StructuredInput(params string[] texts)
+    {
+        return
+        [
+            new
+            {
+                type = "message",
+                role = "user",
+                content = texts
+                    .Select(text => new
+                    {
+                        type = "input_text",
+                        text
+                    })
+                    .ToArray()
+            }
+        ];
     }
 
     private static WebApplicationFactory<Program> CreateFactory(
         IGenerationRuntimeClient generationRuntimeClient,
         IPromptReducerRuntimeClient? promptReducerRuntimeClient,
-        bool usePromptReducerRuntime = true,
+        bool promptReducerRuntimeEnabled = true,
+        string promptReducerRuntimeAddress = "https://localhost:50052",
         string environmentName = "Testing",
         Action<Dictionary<string, string?>>? configureSettings = null,
         Action<IServiceCollection>? configureServices = null,
@@ -389,13 +1215,16 @@ public class ResponsesEndpointTests
             .WithWebHostBuilder(builder =>
             {
                 builder.UseEnvironment(environmentName);
+                builder.UseSetting("PromptReducerRuntime:Enabled", promptReducerRuntimeEnabled.ToString());
+                builder.UseSetting("GenerationRuntime:Address", "https://localhost:50051");
+                builder.UseSetting("PromptReducerRuntime:Address", promptReducerRuntimeAddress);
                 builder.ConfigureAppConfiguration((_, configBuilder) =>
                 {
                     var settings = new Dictionary<string, string?>
                     {
-                        ["PromptReduction:UsePromptReducerRuntime"] = usePromptReducerRuntime.ToString(),
+                        ["PromptReducerRuntime:Enabled"] = promptReducerRuntimeEnabled.ToString(),
                         ["GenerationRuntime:Address"] = "https://localhost:50051",
-                        ["PromptReducerRuntime:Address"] = "https://localhost:50052"
+                        ["PromptReducerRuntime:Address"] = promptReducerRuntimeAddress
                     };
                     configureSettings?.Invoke(settings);
                     configBuilder.AddInMemoryCollection(settings);
@@ -416,13 +1245,62 @@ public class ResponsesEndpointTests
             });
     }
 
+    private static JsonNode ResolveSchema(JsonNode document, JsonNode? schema)
+    {
+        schema.Should().NotBeNull();
+
+        if (schema!["$ref"] is not { } reference)
+        {
+            if (schema["allOf"] is { } allOf)
+            {
+                allOf.AsArray().Should().ContainSingle();
+                return ResolveSchema(document, allOf[0]);
+            }
+
+            return schema;
+        }
+
+        var referencePath = reference.GetValue<string>();
+        referencePath.Should().StartWith("#/");
+
+        var resolved = document;
+        foreach (var segment in referencePath[2..].Split('/').Select(DecodeJsonPointerSegment))
+        {
+            resolved = resolved[segment]!;
+        }
+
+        return resolved;
+    }
+
+    private static string DecodeJsonPointerSegment(string segment)
+    {
+        return segment.Replace("~1", "/", StringComparison.Ordinal)
+            .Replace("~0", "~", StringComparison.Ordinal);
+    }
+
     private sealed class FakeGenerationRuntimeClient(
         bool fitsAfterReduction = true,
         string truncatedPrompt = "__none__",
-        string oversizedPrompt = "__oversized__") : IGenerationRuntimeClient
+        string oversizedPrompt = "__oversized__",
+        bool supportsJsonObjectOutput = true,
+        bool includeJsonObjectRuntimeTrace = true,
+        bool jsonObjectStructuredOutputApplied = true,
+        bool jsonObjectStructuredOutputSatisfied = true,
+        string? jsonObjectContent = null,
+        string runtimeModel = "runtime-model") : IGenerationRuntimeClient
     {
         private readonly string _truncatedPrompt = truncatedPrompt;
         private readonly string _oversizedPrompt = oversizedPrompt;
+        private readonly bool _supportsJsonObjectOutput = supportsJsonObjectOutput;
+        private readonly bool _includeJsonObjectRuntimeTrace = includeJsonObjectRuntimeTrace;
+        private readonly bool _jsonObjectStructuredOutputApplied = jsonObjectStructuredOutputApplied;
+        private readonly bool _jsonObjectStructuredOutputSatisfied = jsonObjectStructuredOutputSatisfied;
+        private readonly string? _jsonObjectContent = jsonObjectContent;
+        private readonly string _runtimeModel = runtimeModel;
+
+        public string? LastPrompt { get; private set; }
+
+        public LlamaGenerationOptions? LastGenerationOptions { get; private set; }
 
         public Task<TokenEstimation> EstimateTokensAsync(string prompt, CancellationToken cancellationToken)
         {
@@ -439,9 +1317,42 @@ public class ResponsesEndpointTests
             return Task.FromResult(new TokenEstimation(6000, 8192, 512, 7680, fitsAfterReduction));
         }
 
-        public Task<LlamaGenerationResult> GenerateAsync(string requestId, string prompt, CancellationToken cancellationToken)
+        public Task<LlamaCapabilities> GetCapabilitiesAsync(CancellationToken cancellationToken)
         {
-            return Task.FromResult(new LlamaGenerationResult(requestId, $"generated: {prompt}"));
+            return Task.FromResult(new LlamaCapabilities(
+                _runtimeModel,
+                8192,
+                SupportsStructuredOutput: true,
+                SupportsJsonObjectOutput: _supportsJsonObjectOutput,
+                SupportsSpeculativeDecoding: false,
+                TokenizerFamily: "llama"));
+        }
+
+        public Task<LlamaGenerationResult> GenerateAsync(
+            string requestId,
+            string prompt,
+            LlamaGenerationOptions? options,
+            CancellationToken cancellationToken)
+        {
+            LastPrompt = prompt;
+            LastGenerationOptions = options;
+            var content = options?.ResponseFormat == LlamaResponseFormatType.JsonObject
+                ? _jsonObjectContent ?? $"{{\"result\":\"{prompt}\"}}"
+                : $"generated: {prompt}";
+
+            return Task.FromResult(new LlamaGenerationResult(
+                requestId,
+                _runtimeModel,
+                content,
+                new LlamaUsage(42, 7, 49),
+                options?.ResponseFormat == LlamaResponseFormatType.JsonObject
+                    ? _includeJsonObjectRuntimeTrace
+                        ? new LlamaRuntimeTrace(
+                            _jsonObjectStructuredOutputApplied,
+                            _jsonObjectStructuredOutputSatisfied,
+                            false)
+                        : null
+                    : null));
         }
     }
 
@@ -452,14 +1363,23 @@ public class ResponsesEndpointTests
             throw new NotSupportedException();
         }
 
-        public Task<LlamaGenerationResult> GenerateAsync(string requestId, string prompt, CancellationToken cancellationToken)
+        public Task<LlamaCapabilities> GetCapabilitiesAsync(CancellationToken cancellationToken)
+        {
+            return Task.FromResult(new LlamaCapabilities("prompt-reducer", 4096, false, false, false, "llama"));
+        }
+
+        public Task<LlamaGenerationResult> GenerateAsync(
+            string requestId,
+            string prompt,
+            LlamaGenerationOptions? options,
+            CancellationToken cancellationToken)
         {
             var promptMarker = "Original user input:\n";
             var originalPrompt = prompt.Contains(promptMarker, StringComparison.Ordinal)
                 ? prompt[(prompt.IndexOf(promptMarker, StringComparison.Ordinal) + promptMarker.Length)..]
                 : prompt;
 
-            return Task.FromResult(new LlamaGenerationResult(requestId, originalPrompt));
+            return Task.FromResult(new LlamaGenerationResult(requestId, "prompt-reducer", originalPrompt, null, null));
         }
     }
 
@@ -472,7 +1392,16 @@ public class ResponsesEndpointTests
             throw _exception;
         }
 
-        public Task<LlamaGenerationResult> GenerateAsync(string requestId, string prompt, CancellationToken cancellationToken)
+        public Task<LlamaCapabilities> GetCapabilitiesAsync(CancellationToken cancellationToken)
+        {
+            throw _exception;
+        }
+
+        public Task<LlamaGenerationResult> GenerateAsync(
+            string requestId,
+            string prompt,
+            LlamaGenerationOptions? options,
+            CancellationToken cancellationToken)
         {
             throw _exception;
         }
@@ -487,7 +1416,16 @@ public class ResponsesEndpointTests
             throw new NotSupportedException();
         }
 
-        public Task<LlamaGenerationResult> GenerateAsync(string requestId, string prompt, CancellationToken cancellationToken)
+        public Task<LlamaCapabilities> GetCapabilitiesAsync(CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<LlamaGenerationResult> GenerateAsync(
+            string requestId,
+            string prompt,
+            LlamaGenerationOptions? options,
+            CancellationToken cancellationToken)
         {
             throw _exception;
         }
@@ -498,7 +1436,17 @@ public class ResponsesEndpointTests
         public List<LogEntry> Entries { get; } = [];
     }
 
-    private sealed record LogEntry(string Category, LogLevel Level, string Message);
+    private static string GetSingleHttpLogMessage(LogSink sink)
+    {
+        var httpLogs = sink.Entries
+            .Where(entry => entry.Category == "Microsoft.AspNetCore.HttpLogging.HttpLoggingMiddleware")
+            .ToList();
+
+        httpLogs.Should().ContainSingle();
+        return httpLogs[0].Message;
+    }
+
+    private sealed record LogEntry(string Category, LogLevel Level, string Message, string? Exception);
 
     private sealed class SinkLoggerProvider(LogSink sink) : ILoggerProvider
     {
@@ -527,7 +1475,7 @@ public class ResponsesEndpointTests
             Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-            _sink.Entries.Add(new LogEntry(_categoryName, logLevel, formatter(state, exception)));
+            _sink.Entries.Add(new LogEntry(_categoryName, logLevel, formatter(state, exception), exception?.ToString()));
         }
     }
 

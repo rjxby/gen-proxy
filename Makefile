@@ -15,7 +15,6 @@ GEN_PROXY_BASE_URL ?= https://localhost:7001
 PUBLIC_API_KEY ?= $(if $(ApiKeys__Keys__0),$(ApiKeys__Keys__0),dev-local-key)
 LLAMA_RUNTIME_OWNER ?= rjxby
 LLAMA_RUNTIME_REPO ?= llama-runtime
-LLAMA_RUNTIME_VERSION ?= v0.1.2
 GENERATION_RUNTIME_PORT ?= 50051
 SUMMARIZER_RUNTIME_PORT ?= 50052
 RUNTIME_STARTUP_TIMEOUT ?= 60
@@ -28,15 +27,16 @@ LLAMA_RUNTIME_DEFAULT_API_KEY ?= runtime-local-key
 LLAMA_RUNTIME_EFFECTIVE_API_KEY := $(if $(LLAMA_RUNTIME_API_KEY),$(LLAMA_RUNTIME_API_KEY),$(LLAMA_RUNTIME_DEFAULT_API_KEY))
 MAIN_WORKER_COUNT ?= 4
 SUMMARIZER_WORKER_COUNT ?= 1
-GEN_PROXY_RUNTIME_ADDRESSES := GenerationRuntime__Address=https://localhost:$(GENERATION_RUNTIME_PORT) PromptReducerRuntime__Address=https://localhost:$(SUMMARIZER_RUNTIME_PORT) PromptReduction__UsePromptReducerRuntime=true
+GEN_PROXY_RUNTIME_ADDRESSES := GenerationRuntime__Address=https://localhost:$(GENERATION_RUNTIME_PORT) PromptReducerRuntime__Enabled=true PromptReducerRuntime__Address=https://localhost:$(SUMMARIZER_RUNTIME_PORT)
 
-.PHONY: help run stack-run smoke smoke-budget
+.PHONY: help run stack-run demo smoke smoke-budget
 
 help:
 	@printf '%s\n' \
 		'Available targets:' \
 		'  make run        Run gen-proxy against already running runtimes' \
 		'  make stack-run  Start local runtimes, run gen-proxy, clean up on exit' \
+		'  make demo       Send a manual demo request to a running local gen-proxy stack' \
 		'  make smoke      Start the local stack, run basic smoke checks, clean up' \
 		'  make smoke-budget  Start a constrained local stack and run budget smoke checks'
 
@@ -65,10 +65,27 @@ stack-run:
 		MAIN_WORKER_COUNT="$(MAIN_WORKER_COUNT)" \
 		SUMMARIZER_WORKER_COUNT="$(SUMMARIZER_WORKER_COUNT)" \
 		MAIN_MODEL_PATH="$(MAIN_MODEL_PATH)" \
+		MAIN_MODEL_ID="$(MAIN_MODEL_ID)" \
 		SUMMARIZER_MODEL_PATH="$(SUMMARIZER_MODEL_PATH)" \
+		SUMMARIZER_MODEL_ID="$(SUMMARIZER_MODEL_ID)" \
 		MAIN_CONTEXT_SIZE="$(MAIN_CONTEXT_SIZE)" \
 		SUMMARIZER_CONTEXT_SIZE="$(SUMMARIZER_CONTEXT_SIZE)" \
 		dotnet run --project "$(STACK_RUNNER_PROJECT)" -- stack-run
+
+demo:
+ifeq ($(strip $(PROMPT)),)
+	@env \
+		GEN_PROXY_BASE_URL="$(GEN_PROXY_BASE_URL)" \
+		GEN_PROXY_API_KEY="$(PUBLIC_API_KEY)" \
+		MAIN_MODEL_ID="$(MAIN_MODEL_ID)" \
+		./scripts/demo-request.sh
+else
+	@env \
+		GEN_PROXY_BASE_URL="$(GEN_PROXY_BASE_URL)" \
+		GEN_PROXY_API_KEY="$(PUBLIC_API_KEY)" \
+		MAIN_MODEL_ID="$(MAIN_MODEL_ID)" \
+		./scripts/demo-request.sh "$(PROMPT)"
+endif
 
 smoke:
 	@env \
@@ -87,7 +104,9 @@ smoke:
 		MAIN_WORKER_COUNT="$(MAIN_WORKER_COUNT)" \
 		SUMMARIZER_WORKER_COUNT="$(SUMMARIZER_WORKER_COUNT)" \
 		MAIN_MODEL_PATH="$(MAIN_MODEL_PATH)" \
+		MAIN_MODEL_ID="$(MAIN_MODEL_ID)" \
 		SUMMARIZER_MODEL_PATH="$(SUMMARIZER_MODEL_PATH)" \
+		SUMMARIZER_MODEL_ID="$(SUMMARIZER_MODEL_ID)" \
 		MAIN_CONTEXT_SIZE="$(MAIN_CONTEXT_SIZE)" \
 		SMOKE_MAIN_CONTEXT_SIZE="$(SMOKE_MAIN_CONTEXT_SIZE)" \
 		SUMMARIZER_CONTEXT_SIZE="$(SUMMARIZER_CONTEXT_SIZE)" \
@@ -111,7 +130,9 @@ smoke-budget:
 		MAIN_WORKER_COUNT="$(MAIN_WORKER_COUNT)" \
 		SUMMARIZER_WORKER_COUNT="$(SUMMARIZER_WORKER_COUNT)" \
 		MAIN_MODEL_PATH="$(MAIN_MODEL_PATH)" \
+		MAIN_MODEL_ID="$(MAIN_MODEL_ID)" \
 		SUMMARIZER_MODEL_PATH="$(SUMMARIZER_MODEL_PATH)" \
+		SUMMARIZER_MODEL_ID="$(SUMMARIZER_MODEL_ID)" \
 		MAIN_CONTEXT_SIZE="$(MAIN_CONTEXT_SIZE)" \
 		SMOKE_MAIN_CONTEXT_SIZE="$(SMOKE_MAIN_CONTEXT_SIZE)" \
 		SUMMARIZER_CONTEXT_SIZE="$(SUMMARIZER_CONTEXT_SIZE)" \

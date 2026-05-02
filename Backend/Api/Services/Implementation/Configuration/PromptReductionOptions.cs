@@ -4,8 +4,6 @@ public class PromptReductionOptions
 {
     public const string SectionName = "PromptReduction";
 
-    public bool UsePromptReducerRuntime { get; set; } = true;
-
     public string SummarizationPromptTemplate { get; set; } =
         """
         Rewrite the following user input so it fits within the generation runtime's allowed input budget for this request while preserving the essential user intent, constraints, and required output details.

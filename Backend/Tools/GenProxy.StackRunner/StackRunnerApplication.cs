@@ -10,7 +10,7 @@ namespace GenProxy.StackRunner;
 
 internal static class StackRunnerDefaults
 {
-    public const string LlamaRuntimeVersion = "v0.1.2";
+    public const string LlamaRuntimeVersion = "v0.4.0";
     public const string LatestReleaseKeyword = "latest";
 }
 
@@ -58,6 +58,8 @@ internal sealed class StackRunnerApplicationInstance(StackRunnerOptions options)
     private static readonly HttpClient HttpClient = CreateHttpClient();
     private readonly StackRunnerOptions _options = options;
     private readonly List<ManagedProcess> _managedProcesses = [];
+    private readonly IReadOnlyList<PidTrackedProcessRegistration> _pidTrackedProcesses =
+        PidTrackedProcessRegistration.CreateStartOrder(options);
     private int _cleanupStarted;
 
     public async Task<int> RunAsync(CancellationToken cancellationToken)
@@ -77,9 +79,10 @@ internal sealed class StackRunnerApplicationInstance(StackRunnerOptions options)
             await EnsureHttpsDevelopmentCertificateAsync(cancellationToken);
 
             var mainRuntime = await StartRuntimeAsync(
-                name: "main",
+                registration: GetPidTrackedProcess("main"),
                 port: _options.GenerationRuntimePort,
                 modelPath: _options.MainModelPath,
+                modelId: _options.MainModelId,
                 workerCount: _options.MainWorkerCount,
                 contextSize: SmokeSuiteUtilities.GetEffectiveMainContextSize(
                     _options.Mode,
@@ -87,14 +90,13 @@ internal sealed class StackRunnerApplicationInstance(StackRunnerOptions options)
                     _options.MainContextSize,
                     _options.SmokeMainContextSize),
                 runtimeDir,
-                _options.MainRuntimePidFile,
-                echoToConsole: false,
                 cancellationToken);
 
             var summarizerRuntime = await StartRuntimeAsync(
-                name: "summarizer",
+                registration: GetPidTrackedProcess("summarizer"),
                 port: _options.SummarizerRuntimePort,
                 modelPath: _options.SummarizerModelPath,
+                modelId: _options.SummarizerModelId,
                 workerCount: _options.SummarizerWorkerCount,
                 contextSize: SmokeSuiteUtilities.GetEffectiveSummarizerContextSize(
                     _options.Mode,
@@ -102,8 +104,6 @@ internal sealed class StackRunnerApplicationInstance(StackRunnerOptions options)
                     _options.SummarizerContextSize,
                     _options.SmokeSummarizerContextSize),
                 runtimeDir,
-                _options.SummarizerRuntimePidFile,
-                echoToConsole: false,
                 cancellationToken);
 
             ConsoleStyling.Info($">>> Waiting for main runtime on port {_options.GenerationRuntimePort}");
@@ -212,17 +212,16 @@ internal sealed class StackRunnerApplicationInstance(StackRunnerOptions options)
     }
 
     private async Task<ManagedProcess> StartRuntimeAsync(
-        string name,
+        PidTrackedProcessRegistration registration,
         int port,
         string modelPath,
+        string modelId,
         int workerCount,
         int? contextSize,
         string runtimeDir,
-        string pidFile,
-        bool echoToConsole,
         CancellationToken cancellationToken)
     {
-        var logFile = Path.Combine(_options.RuntimeLogDir, $"{name}.log");
+        var logFile = Path.Combine(_options.RuntimeLogDir, $"{registration.Name}.log");
         var binaryPath = Path.Combine(runtimeDir, _options.RuntimeBinaryName);
 
         var startInfo = new ProcessStartInfo
@@ -236,6 +235,7 @@ internal sealed class StackRunnerApplicationInstance(StackRunnerOptions options)
 
         startInfo.Environment["ASPNETCORE_URLS"] = $"https://localhost:{port}";
         startInfo.Environment["HostedModel__ModelPath"] = modelPath;
+        startInfo.Environment["HostedModel__ModelId"] = modelId;
         startInfo.Environment["ApiKeys__Keys__0"] = _options.RuntimeApiKey;
         startInfo.Environment["Inference__WorkerCount"] = workerCount.ToString();
 
@@ -244,20 +244,20 @@ internal sealed class StackRunnerApplicationInstance(StackRunnerOptions options)
             startInfo.Environment["Llama__Native__ContextSize"] = contextSize.Value.ToString();
         }
 
-        ConsoleStyling.Info($">>> Starting {name} runtime on https://localhost:{port}");
+        ConsoleStyling.Info($">>> Starting {registration.Name} runtime on https://localhost:{port}");
         var process = await ManagedProcess.StartAsync(
-            name,
+            registration.Name,
             startInfo,
             logFile,
-            echoToConsole,
+            echoToConsole: false,
             startupDetector: line =>
                 line.Contains("Application started. Press Ctrl+C to shut down.", StringComparison.Ordinal) ||
                 line.Contains("Now listening on:", StringComparison.Ordinal),
             cancellationToken);
 
         _managedProcesses.Add(process);
-        await File.WriteAllTextAsync(pidFile, process.ProcessId.ToString() + Environment.NewLine, cancellationToken);
-        ConsoleStyling.Info($">>> {name} runtime pid {process.ProcessId} (log: .runtime-logs/{name}.log)");
+        await WritePidFileAsync(registration, process.ProcessId, cancellationToken);
+        ConsoleStyling.Info($">>> {registration.Name} runtime pid {process.ProcessId} (log: .runtime-logs/{registration.Name}.log)");
         return process;
     }
 
@@ -281,8 +281,8 @@ internal sealed class StackRunnerApplicationInstance(StackRunnerOptions options)
         startInfo.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
         startInfo.Environment["ASPNETCORE_URLS"] = _options.ApiBaseUrl;
         startInfo.Environment["GenerationRuntime__Address"] = $"https://localhost:{_options.GenerationRuntimePort}";
+        startInfo.Environment["PromptReducerRuntime__Enabled"] = bool.TrueString;
         startInfo.Environment["PromptReducerRuntime__Address"] = $"https://localhost:{_options.SummarizerRuntimePort}";
-        startInfo.Environment["PromptReduction__UsePromptReducerRuntime"] = bool.TrueString;
         startInfo.Environment["GenerationRuntime__ApiKey"] = _options.RuntimeApiKey;
         startInfo.Environment["PromptReducerRuntime__ApiKey"] = _options.RuntimeApiKey;
 
@@ -298,6 +298,7 @@ internal sealed class StackRunnerApplicationInstance(StackRunnerOptions options)
             cancellationToken);
 
         _managedProcesses.Add(process);
+        await WritePidFileAsync(GetPidTrackedProcess("api"), process.ProcessId, cancellationToken);
         return process;
     }
 
@@ -393,12 +394,15 @@ internal sealed class StackRunnerApplicationInstance(StackRunnerOptions options)
 
     private async Task StopManagedProcessesFromPidFilesAsync()
     {
-        await StopProcessFromPidFileAsync(_options.SummarizerRuntimePidFile, "summarizer");
-        await StopProcessFromPidFileAsync(_options.MainRuntimePidFile, "main");
+        foreach (var registration in _pidTrackedProcesses.Reverse())
+        {
+            await StopProcessFromPidFileAsync(registration);
+        }
     }
 
-    private static async Task StopProcessFromPidFileAsync(string pidFile, string name)
+    private static async Task StopProcessFromPidFileAsync(PidTrackedProcessRegistration registration)
     {
+        var pidFile = registration.PidFile;
         if (!File.Exists(pidFile))
         {
             return;
@@ -417,7 +421,7 @@ internal sealed class StackRunnerApplicationInstance(StackRunnerOptions options)
             return;
         }
 
-        ConsoleStyling.Warning($">>> Stopping {name} runtime (pid {pid})");
+        ConsoleStyling.Warning($">>> Stopping {registration.Name} process (pid {pid})");
         await ProcessUtilities.StopAsync(process, TimeSpan.FromSeconds(10));
         File.Delete(pidFile);
     }
@@ -434,8 +438,24 @@ internal sealed class StackRunnerApplicationInstance(StackRunnerOptions options)
             await process.DisposeAsync();
         }
 
-        DeleteFileIfExists(_options.MainRuntimePidFile);
-        DeleteFileIfExists(_options.SummarizerRuntimePidFile);
+        foreach (var registration in _pidTrackedProcesses.Reverse())
+        {
+            DeleteFileIfExists(registration.PidFile);
+        }
+    }
+
+    private PidTrackedProcessRegistration GetPidTrackedProcess(string name)
+    {
+        return _pidTrackedProcesses.FirstOrDefault(process => string.Equals(process.Name, name, StringComparison.Ordinal))
+            ?? throw new InvalidOperationException($"Missing PID-tracked process registration '{name}'.");
+    }
+
+    private static Task WritePidFileAsync(
+        PidTrackedProcessRegistration registration,
+        int processId,
+        CancellationToken cancellationToken)
+    {
+        return File.WriteAllTextAsync(registration.PidFile, processId.ToString() + Environment.NewLine, cancellationToken);
     }
 
     private static void DeleteFileIfExists(string path)
@@ -531,13 +551,16 @@ internal sealed record StackRunnerOptions(
     string DotnetProjectPath,
     string ApiBaseUrl,
     string MainModelPath,
+    string MainModelId,
     string SummarizerModelPath,
+    string SummarizerModelId,
     string RuntimeCacheDir,
     string RuntimeLogDir,
     string RuntimeRunDir,
     string RuntimeVersionFile,
     string MainRuntimePidFile,
     string SummarizerRuntimePidFile,
+    string ApiPidFile,
     string LlamaRuntimeOwner,
     string LlamaRuntimeRepo,
     string LlamaRuntimeVersion,
@@ -575,13 +598,16 @@ internal sealed record StackRunnerOptions(
             DotnetProjectPath: dotnetProjectPath,
             ApiBaseUrl: ReadEnvironment("GEN_PROXY_BASE_URL", "https://localhost:7001"),
             MainModelPath: RequireExistingFile("MAIN_MODEL_PATH"),
+            MainModelId: RequireEnvironment("MAIN_MODEL_ID"),
             SummarizerModelPath: RequireExistingFile("SUMMARIZER_MODEL_PATH"),
+            SummarizerModelId: RequireEnvironment("SUMMARIZER_MODEL_ID"),
             RuntimeCacheDir: Path.Combine(rootDir, ".runtime-cache"),
             RuntimeLogDir: Path.Combine(rootDir, ".runtime-logs"),
             RuntimeRunDir: Path.Combine(rootDir, ".runtime-run"),
             RuntimeVersionFile: Path.Combine(rootDir, ".runtime-run", "llama-runtime-version.txt"),
             MainRuntimePidFile: Path.Combine(rootDir, ".runtime-run", "main.pid"),
             SummarizerRuntimePidFile: Path.Combine(rootDir, ".runtime-run", "summarizer.pid"),
+            ApiPidFile: Path.Combine(rootDir, ".runtime-run", "api.pid"),
             LlamaRuntimeOwner: ReadEnvironment("LLAMA_RUNTIME_OWNER", "rjxby"),
             LlamaRuntimeRepo: ReadEnvironment("LLAMA_RUNTIME_REPO", "llama-runtime"),
             LlamaRuntimeVersion: ReadEnvironment("LLAMA_RUNTIME_VERSION", StackRunnerDefaults.LlamaRuntimeVersion),
@@ -686,6 +712,17 @@ internal sealed record StackRunnerOptions(
         return value;
     }
 
+    private static string RequireEnvironment(string name)
+    {
+        var value = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            throw new InvalidOperationException($"{name} is required.");
+        }
+
+        return value;
+    }
+
     private static string ReadEnvironment(string name, string defaultValue)
     {
         var value = Environment.GetEnvironmentVariable(name);
@@ -741,6 +778,16 @@ internal sealed record StackRunnerOptions(
 
         throw new PlatformNotSupportedException($"Unsupported host OS '{Environment.OSVersion.Platform}'.");
     }
+}
+
+internal sealed record PidTrackedProcessRegistration(string Name, string PidFile)
+{
+    public static IReadOnlyList<PidTrackedProcessRegistration> CreateStartOrder(StackRunnerOptions options) =>
+    [
+        new("main", options.MainRuntimePidFile),
+        new("summarizer", options.SummarizerRuntimePidFile),
+        new("api", options.ApiPidFile)
+    ];
 }
 
 internal sealed class ManagedProcess : IAsyncDisposable

@@ -67,7 +67,7 @@ internal sealed class SmokeRunner(StackRunnerOptions options) : IDisposable
     {
         ConsoleStyling.Info($">>> Running {_options.SmokeSuite.ToString().ToLowerInvariant()} smoke suite");
 
-        foreach (var scenario in CreateScenarios(_options.SmokeSuite))
+        foreach (var scenario in CreateScenarios(_options.SmokeSuite, _options.MainModelId))
         {
             ConsoleStyling.Info($">>> Smoke: {scenario.Name}");
 
@@ -107,29 +107,29 @@ internal sealed class SmokeRunner(StackRunnerOptions options) : IDisposable
 
     public void Dispose() => _httpClient.Dispose();
 
-    internal static IReadOnlyList<SmokeScenario> CreateScenarios(SmokeSuite suite) => suite switch
+    internal static IReadOnlyList<SmokeScenario> CreateScenarios(SmokeSuite suite, string modelId) => suite switch
     {
         SmokeSuite.Basic =>
         [
             new SmokeScenario(
                 "authorized response generation",
-                new SmokeRequestPayload("gpt-5.1", "smoke ping", 32),
+                CreateRequest(modelId, "smoke ping"),
                 HttpStatusCode.OK),
             new SmokeScenario(
                 "unauthorized request is rejected",
-                new SmokeRequestPayload("gpt-5.1", "missing key", 32),
+                CreateRequest(modelId, "missing key"),
                 HttpStatusCode.Unauthorized,
                 IncludeApiKey: false),
             new SmokeScenario(
                 "invalid request is rejected",
-                new SmokeRequestPayload(string.Empty, string.Empty, 32),
+                CreateRequest(string.Empty, string.Empty),
                 HttpStatusCode.BadRequest)
         ],
         SmokeSuite.Budget =>
         [
             new SmokeScenario(
                 "oversized prompt is rejected after reduction",
-                new SmokeRequestPayload("gpt-5.1", GenerateOversizedPrompt(), 32),
+                CreateRequest(modelId, GenerateOversizedPrompt()),
                 HttpStatusCode.UnprocessableEntity)
         ],
         SmokeSuite.All => throw new InvalidOperationException("Smoke suite 'All' must be expanded before scenario execution."),
@@ -223,6 +223,20 @@ internal sealed class SmokeRunner(StackRunnerOptions options) : IDisposable
                 "END_LITERAL_BLOCK"
             ]);
     }
+
+    private static SmokeRequestPayload CreateRequest(string model, string text)
+    {
+        return new SmokeRequestPayload(
+            model,
+            [
+                new SmokeInputMessagePayload(
+                    "message",
+                    "user",
+                    [
+                        new SmokeInputContentPartPayload("input_text", text)
+                    ])
+            ]);
+    }
 }
 
 internal sealed record SmokeScenario(
@@ -232,6 +246,21 @@ internal sealed record SmokeScenario(
     bool IncludeApiKey = true);
 
 internal sealed record SmokeRequestPayload(
+    [property: JsonPropertyName("model")]
     string Model,
-    string Input,
-    [property: JsonPropertyName("max_output_tokens")] int MaxOutputTokens);
+    [property: JsonPropertyName("input")]
+    IReadOnlyList<SmokeInputMessagePayload> Input);
+
+internal sealed record SmokeInputMessagePayload(
+    [property: JsonPropertyName("type")]
+    string Type,
+    [property: JsonPropertyName("role")]
+    string Role,
+    [property: JsonPropertyName("content")]
+    IReadOnlyList<SmokeInputContentPartPayload> Content);
+
+internal sealed record SmokeInputContentPartPayload(
+    [property: JsonPropertyName("type")]
+    string Type,
+    [property: JsonPropertyName("text")]
+    string Text);

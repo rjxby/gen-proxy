@@ -1,6 +1,7 @@
 using FluentAssertions;
 using GenProxy.Api.Integrations.Contracts;
 using GenProxy.Api.Integrations.Contracts.Models;
+using GenProxy.Api.Services.Contracts;
 using GenProxy.Api.Services.Implementation.Services;
 using Moq;
 using Xunit;
@@ -24,7 +25,7 @@ public class LeadingPromptTruncatorTests
 
         result.Prompt.Should().Be("efghij");
         result.WasReduced.Should().BeTrue();
-        result.Strategy.Should().Be("leading_truncation");
+        result.Strategy.Should().Be(PromptReductionStrategy.LeadingTruncation);
     }
 
     [Fact]
@@ -41,6 +42,6 @@ public class LeadingPromptTruncatorTests
 
         result.Prompt.Should().Be("prompt");
         result.WasReduced.Should().BeFalse();
-        result.Strategy.Should().Be("none");
+        result.Strategy.Should().Be(PromptReductionStrategy.None);
     }
 }

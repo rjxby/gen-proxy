@@ -1,12 +1,22 @@
-﻿using GenProxy.Api.Host.Middleware;
+﻿using GenProxy.Api.Host.Logging;
+using GenProxy.Api.Host.Middleware;
 using GenProxy.Api.Host.Validation;
 using Microsoft.AspNetCore.HttpLogging;
-using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Options;
+using System.Text.Json.Serialization;
 
 namespace GenProxy.Api.Host.Configurations;
 
 public static class SetupPresentationLayer
 {
+    private const HttpLoggingFields BaseHttpLoggingFields =
+        HttpLoggingFields.RequestMethod |
+        HttpLoggingFields.RequestPath |
+        HttpLoggingFields.RequestHeaders |
+        HttpLoggingFields.ResponseStatusCode |
+        HttpLoggingFields.ResponseHeaders |
+        HttpLoggingFields.Duration;
+
     public static IServiceCollection AddPresentationLayer(this IServiceCollection services, IConfiguration configuration)
     {
         services
@@ -21,13 +31,17 @@ public static class SetupPresentationLayer
                     options.MaxMetadataValueCharacters > 0,
                 "Request limits must be positive values.")
             .ValidateOnStart();
+        services
+            .AddOptions<ResponsesLoggingOptions>()
+            .Bind(configuration.GetSection(ResponsesLoggingOptions.SectionName))
+            .ValidateOnStart();
 
         services.AddSwagger();
         services.AddProblemDetails();
         services.AddExceptionHandler<ExceptionHandler>();
         services.AddHttpLogging(options =>
         {
-            options.LoggingFields = HttpLoggingFields.None;
+            options.LoggingFields = BaseHttpLoggingFields;
             options.CombineLogs = true;
             options.RequestBodyLogLimit = 4096;
             options.ResponseBodyLogLimit = 4096;
@@ -46,12 +60,31 @@ public static class SetupPresentationLayer
             options.MediaTypeOptions.AddText("application/problem+json");
             options.MediaTypeOptions.AddText("text/plain");
         });
+        services
+            .AddOptions<HttpLoggingOptions>()
+            .PostConfigure<IOptions<ResponsesLoggingOptions>>((options, responsesLoggingOptions) =>
+            {
+                options.LoggingFields = GetHttpLoggingFields(responsesLoggingOptions.Value);
+            });
         services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = true);
         services.ConfigureHttpJsonOptions(options =>
         {
             options.SerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.SnakeCaseLower;
+            options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
         });
 
         return services;
+    }
+
+    private static HttpLoggingFields GetHttpLoggingFields(ResponsesLoggingOptions options)
+    {
+        if (!options.LogBodies)
+        {
+            return BaseHttpLoggingFields;
+        }
+
+        return BaseHttpLoggingFields |
+            HttpLoggingFields.RequestBody |
+            HttpLoggingFields.ResponseBody;
     }
 }

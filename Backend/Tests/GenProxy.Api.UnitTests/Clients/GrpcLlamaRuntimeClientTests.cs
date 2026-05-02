@@ -1,4 +1,6 @@
 using FluentAssertions;
+using GenProxy.Api.Integrations.Contracts.Configuration;
+using GenProxy.Api.Integrations.Contracts.Models;
 using GenProxy.Api.Integrations.Implementation.Clients;
 using GenProxy.Api.Integrations.Implementation.Configuration;
 using GenProxy.Api.UnitTests.Testing;
@@ -81,22 +83,182 @@ public class GrpcLlamaRuntimeClientTests
             GenerateReply = new GenerateReply
             {
                 RequestId = "req_123",
-                Result = "generated text"
+                Model = "runtime-model",
+                Content = "generated text",
+                Usage = new Usage
+                {
+                    InputTokens = 11,
+                    OutputTokens = 7,
+                    TotalTokens = 18
+                },
+                RuntimeTrace = new RuntimeTrace
+                {
+                    StructuredOutputApplied = true,
+                    StructuredOutputSatisfied = true,
+                    SpeculativeDecodingUsed = false
+                }
             }
         };
         var client = new GrpcLlamaRuntimeClient(RuntimeName, NullLogger<GrpcLlamaRuntimeClient>.Instance, transport);
 
-        var result = await client.GenerateAsync("req_123", "prompt", CancellationToken.None);
+        var result = await client.GenerateAsync(
+            "req_123",
+            "prompt",
+            new LlamaGenerationOptions(LlamaResponseFormatType.JsonObject, 123, 0.3f, 0.8f),
+            CancellationToken.None);
 
         transport.LastGenerateRequest.Should().NotBeNull();
         transport.LastGenerateRequest!.RequestId.Should().Be("req_123");
         transport.LastGenerateRequest.Prompt.Should().Be("prompt");
+        transport.LastGenerateRequest.ResponseFormat.Type.Should().Be("json_object");
+        transport.LastGenerateRequest.Generation.MaxOutputTokens.Should().Be(123);
+        transport.LastGenerateRequest.Generation.Temperature.Should().Be(0.3f);
+        transport.LastGenerateRequest.Generation.TopP.Should().Be(0.8f);
         result.RequestId.Should().Be("req_123");
-        result.Result.Should().Be("generated text");
+        result.Model.Should().Be("runtime-model");
+        result.Content.Should().Be("generated text");
+        result.Usage.Should().NotBeNull();
+        result.Usage!.InputTokens.Should().Be(11);
+        result.Usage.OutputTokens.Should().Be(7);
+        result.Usage.TotalTokens.Should().Be(18);
+        result.RuntimeTrace.Should().NotBeNull();
+        result.RuntimeTrace!.StructuredOutputSatisfied.Should().BeTrue();
     }
 
     [Fact]
-    public async Task EstimateTokensAsync_WhenTransportThrowsRpcException_ThrowsUpstreamRuntimeException()
+    public async Task GenerateAsync_WhenOptionsOmitted_DoesNotPopulateGenerationBlock()
+    {
+        var transport = new FakeGrpcTransport();
+        var client = new GrpcLlamaRuntimeClient(RuntimeName, NullLogger<GrpcLlamaRuntimeClient>.Instance, transport);
+
+        await client.GenerateAsync("req_123", "prompt", null, CancellationToken.None);
+
+        transport.LastGenerateRequest.Should().NotBeNull();
+        transport.LastGenerateRequest!.Generation.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetCapabilitiesAsync_MapsTransportReplyAndFetchesFreshResults()
+    {
+        var transport = new FakeGrpcTransport
+        {
+            CapabilitiesReply = new GetCapabilitiesReply
+            {
+                ModelId = "runtime-model",
+                ContextSize = 8192,
+                SupportsStructuredOutput = true,
+                SupportsJsonObjectOutput = true,
+                SupportsSpeculativeDecoding = false,
+                TokenizerFamily = "llama"
+            }
+        };
+        var client = new GrpcLlamaRuntimeClient(RuntimeName, NullLogger<GrpcLlamaRuntimeClient>.Instance, transport);
+
+        var firstResult = await client.GetCapabilitiesAsync(CancellationToken.None);
+        var secondResult = await client.GetCapabilitiesAsync(CancellationToken.None);
+
+        firstResult.ModelId.Should().Be("runtime-model");
+        firstResult.SupportsJsonObjectOutput.Should().BeTrue();
+        secondResult.Should().BeEquivalentTo(firstResult);
+        transport.GetCapabilitiesCallCount.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task GetCapabilitiesAsync_WhenCalledConcurrently_StartsOneFetchPerCall()
+    {
+        var firstReplySource = new TaskCompletionSource<GetCapabilitiesReply>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondReplySource = new TaskCompletionSource<GetCapabilitiesReply>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var transport = new FakeGrpcTransport();
+        transport.CapabilityResponses.Enqueue(_ => firstReplySource.Task);
+        transport.CapabilityResponses.Enqueue(_ => secondReplySource.Task);
+        var client = new GrpcLlamaRuntimeClient(RuntimeName, NullLogger<GrpcLlamaRuntimeClient>.Instance, transport);
+
+        var firstTask = client.GetCapabilitiesAsync(CancellationToken.None);
+        var secondTask = client.GetCapabilitiesAsync(CancellationToken.None);
+
+        var timeoutAt = DateTime.UtcNow.AddSeconds(1);
+        while (transport.GetCapabilitiesCallCount < 2 && DateTime.UtcNow < timeoutAt)
+        {
+            await Task.Yield();
+        }
+
+        transport.GetCapabilitiesCallCount.Should().Be(2);
+
+        firstReplySource.SetResult(new GetCapabilitiesReply
+        {
+            ModelId = "runtime-model",
+            ContextSize = 8192,
+            SupportsStructuredOutput = true,
+            SupportsJsonObjectOutput = true,
+            SupportsSpeculativeDecoding = false,
+            TokenizerFamily = "llama"
+        });
+        secondReplySource.SetResult(new GetCapabilitiesReply
+        {
+            ModelId = "runtime-model",
+            ContextSize = 8192,
+            SupportsStructuredOutput = true,
+            SupportsJsonObjectOutput = true,
+            SupportsSpeculativeDecoding = false,
+            TokenizerFamily = "llama"
+        });
+
+        var results = await Task.WhenAll(firstTask, secondTask);
+
+        results[0].Should().BeEquivalentTo(results[1]);
+        transport.GetCapabilitiesCallCount.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task GetCapabilitiesAsync_WhenInitialFetchFails_AllowsRetry()
+    {
+        var transport = new FakeGrpcTransport();
+        transport.CapabilityResponses.Enqueue(_ => Task.FromException<GetCapabilitiesReply>(
+            new RpcException(new Status(StatusCode.Unavailable, "offline"))));
+        transport.CapabilityResponses.Enqueue(_ => Task.FromResult(new GetCapabilitiesReply
+        {
+            ModelId = "runtime-model",
+            ContextSize = 8192,
+            SupportsStructuredOutput = true,
+            SupportsJsonObjectOutput = true,
+            SupportsSpeculativeDecoding = false,
+            TokenizerFamily = "llama"
+        }));
+        var client = new GrpcLlamaRuntimeClient(RuntimeName, NullLogger<GrpcLlamaRuntimeClient>.Instance, transport);
+
+        var firstAttempt = async () => await client.GetCapabilitiesAsync(CancellationToken.None);
+
+        await firstAttempt.Should().ThrowAsync<GenProxy.Api.Integrations.Contracts.LlamaRuntimeCallException>();
+
+        var secondResult = await client.GetCapabilitiesAsync(CancellationToken.None);
+
+        secondResult.ModelId.Should().Be("runtime-model");
+        transport.GetCapabilitiesCallCount.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task GetCapabilitiesAsync_WhenCancelled_PropagatesCallerCancellationToTransport()
+    {
+        var transport = new FakeGrpcTransport();
+        transport.CapabilityResponses.Enqueue(async cancellationToken =>
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return new GetCapabilitiesReply();
+        });
+        var client = new GrpcLlamaRuntimeClient(RuntimeName, NullLogger<GrpcLlamaRuntimeClient>.Instance, transport);
+        using var cancellationTokenSource = new CancellationTokenSource();
+
+        var capabilitiesTask = client.GetCapabilitiesAsync(cancellationTokenSource.Token);
+        cancellationTokenSource.CancelAfter(TimeSpan.FromMilliseconds(100));
+
+        var act = async () => await capabilitiesTask.WaitAsync(TimeSpan.FromSeconds(1));
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        transport.GetCapabilitiesCallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task EstimateTokensAsync_WhenTransportThrowsRpcException_ThrowsLlamaRuntimeCallException()
     {
         var transport = new FakeGrpcTransport
         {
@@ -106,13 +268,13 @@ public class GrpcLlamaRuntimeClientTests
 
         var act = async () => await client.EstimateTokensAsync("prompt", CancellationToken.None);
 
-        var exception = await act.Should().ThrowAsync<GenProxy.Api.Integrations.Contracts.UpstreamRuntimeException>();
+        var exception = await act.Should().ThrowAsync<GenProxy.Api.Integrations.Contracts.LlamaRuntimeCallException>();
         exception.Which.Message.Should().Be("Failed to estimate tokens against the test runtime.");
         exception.Which.InnerException.Should().BeOfType<RpcException>();
     }
 
     [Fact]
-    public async Task GenerateAsync_WhenPromptReducerReportsBudgetExceeded_ThrowsUpstreamPromptBudgetExceededException()
+    public async Task GenerateAsync_WhenPromptReducerReportsBudgetExceeded_ThrowsLlamaRuntimePromptBudgetExceededException()
     {
         var transport = new FakeGrpcTransport
         {
@@ -120,15 +282,15 @@ public class GrpcLlamaRuntimeClientTests
         };
         var client = new GrpcLlamaRuntimeClient("prompt_reducer", NullLogger<GrpcLlamaRuntimeClient>.Instance, transport);
 
-        var act = async () => await client.GenerateAsync("req_123", "prompt", CancellationToken.None);
+        var act = async () => await client.GenerateAsync("req_123", "prompt", null, CancellationToken.None);
 
-        var exception = await act.Should().ThrowAsync<GenProxy.Api.Integrations.Contracts.UpstreamPromptBudgetExceededException>();
+        var exception = await act.Should().ThrowAsync<GenProxy.Api.Integrations.Contracts.LlamaRuntimePromptBudgetExceededException>();
         exception.Which.Message.Should().Contain("Prompt exceeds input budget");
         exception.Which.InnerException.Should().BeOfType<RpcException>();
     }
 
     [Fact]
-    public async Task GenerateAsync_WhenNonBudgetInvalidArgument_ThrowsUpstreamRuntimeException()
+    public async Task GenerateAsync_WhenNonBudgetInvalidArgument_ThrowsLlamaRuntimeCallException()
     {
         var transport = new FakeGrpcTransport
         {
@@ -136,10 +298,32 @@ public class GrpcLlamaRuntimeClientTests
         };
         var client = new GrpcLlamaRuntimeClient("prompt_reducer", NullLogger<GrpcLlamaRuntimeClient>.Instance, transport);
 
-        var act = async () => await client.GenerateAsync("req_123", "prompt", CancellationToken.None);
+        var act = async () => await client.GenerateAsync("req_123", "prompt", null, CancellationToken.None);
 
-        var exception = await act.Should().ThrowAsync<GenProxy.Api.Integrations.Contracts.UpstreamRuntimeException>();
+        var exception = await act.Should().ThrowAsync<GenProxy.Api.Integrations.Contracts.LlamaRuntimeCallException>();
         exception.Which.Message.Should().Be("Failed to generate against the prompt_reducer runtime.");
+        exception.Which.InnerException.Should().BeOfType<RpcException>();
+    }
+
+    [Fact]
+    public async Task GenerateAsync_WhenRuntimeRejectsGenerationOverrides_ThrowsLlamaRuntimeUnsupportedGenerationOverridesException()
+    {
+        var trailers = new Metadata
+        {
+            { "runtime-error-code", "unsupported_generation_overrides" }
+        };
+        var transport = new FakeGrpcTransport
+        {
+            GenerateException = new RpcException(
+                new Status(StatusCode.InvalidArgument, "Request-level generation overrides are not supported by this runtime yet. Omit Generation to use runtime defaults."),
+                trailers)
+        };
+        var client = new GrpcLlamaRuntimeClient(RuntimeName, NullLogger<GrpcLlamaRuntimeClient>.Instance, transport);
+
+        var act = async () => await client.GenerateAsync("req_123", "prompt", null, CancellationToken.None);
+
+        var exception = await act.Should().ThrowAsync<GenProxy.Api.Integrations.Contracts.LlamaRuntimeUnsupportedGenerationOverridesException>();
+        exception.Which.Message.Should().Contain("Request-level generation overrides are not supported");
         exception.Which.InnerException.Should().BeOfType<RpcException>();
     }
 
@@ -153,9 +337,9 @@ public class GrpcLlamaRuntimeClientTests
         var logger = new TestLogger<GrpcLlamaRuntimeClient>();
         var client = new GrpcLlamaRuntimeClient("prompt_reducer", logger, transport);
 
-        var act = async () => await client.GenerateAsync("req_123", "prompt", CancellationToken.None);
+        var act = async () => await client.GenerateAsync("req_123", "prompt", null, CancellationToken.None);
 
-        await act.Should().ThrowAsync<GenProxy.Api.Integrations.Contracts.UpstreamPromptBudgetExceededException>();
+        await act.Should().ThrowAsync<GenProxy.Api.Integrations.Contracts.LlamaRuntimePromptBudgetExceededException>();
         logger.Entries.Should().ContainSingle();
         logger.Entries[0].Level.Should().Be(LogLevel.Information);
         logger.Entries[0].Exception.Should().BeNull();
@@ -163,7 +347,7 @@ public class GrpcLlamaRuntimeClientTests
     }
 
     [Fact]
-    public async Task GenerateAsync_WhenTransportThrowsHttpRequestException_ThrowsUpstreamRuntimeException()
+    public async Task GenerateAsync_WhenTransportThrowsHttpRequestException_ThrowsLlamaRuntimeCallException()
     {
         var transport = new FakeGrpcTransport
         {
@@ -171,9 +355,9 @@ public class GrpcLlamaRuntimeClientTests
         };
         var client = new GrpcLlamaRuntimeClient(RuntimeName, NullLogger<GrpcLlamaRuntimeClient>.Instance, transport);
 
-        var act = async () => await client.GenerateAsync("req_123", "prompt", CancellationToken.None);
+        var act = async () => await client.GenerateAsync("req_123", "prompt", null, CancellationToken.None);
 
-        var exception = await act.Should().ThrowAsync<GenProxy.Api.Integrations.Contracts.UpstreamRuntimeException>();
+        var exception = await act.Should().ThrowAsync<GenProxy.Api.Integrations.Contracts.LlamaRuntimeCallException>();
         exception.Which.Message.Should().Be("Failed to generate against the test runtime.");
         exception.Which.InnerException.Should().BeOfType<HttpRequestException>();
     }
@@ -204,11 +388,12 @@ public class GrpcLlamaRuntimeClientTests
     }
 
     [Fact]
-    public void PromptReducerRuntimeOptions_BindsApiKeyFromConfiguration()
+    public void PromptReducerRuntimeOptions_BindsEnabledAddressAndApiKeyFromConfiguration()
     {
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
+                [$"{PromptReducerRuntimeOptions.SectionName}:Enabled"] = "false",
                 [$"{PromptReducerRuntimeOptions.SectionName}:Address"] = "https://reducer.test",
                 [$"{PromptReducerRuntimeOptions.SectionName}:ApiKey"] = "reducer-key"
             })
@@ -224,17 +409,18 @@ public class GrpcLlamaRuntimeClientTests
         using var serviceProvider = services.BuildServiceProvider();
         var options = serviceProvider.GetRequiredService<IOptions<PromptReducerRuntimeOptions>>().Value;
 
+        options.Enabled.Should().BeFalse();
         options.Address.Should().Be("https://reducer.test");
         options.ApiKey.Should().Be("reducer-key");
     }
 
     [Fact]
-    public void PromptReductionOptions_BindsUsePromptReducerRuntimeFromConfiguration()
+    public void PromptReductionOptions_BindsSummarizationPromptTemplateFromConfiguration()
     {
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                [$"{PromptReductionOptions.SectionName}:UsePromptReducerRuntime"] = "false"
+                [$"{PromptReductionOptions.SectionName}:SummarizationPromptTemplate"] = "condense {{prompt}} to {{max_tokens}}"
             })
             .Build();
 
@@ -244,7 +430,7 @@ public class GrpcLlamaRuntimeClientTests
         using var serviceProvider = services.BuildServiceProvider();
         var options = serviceProvider.GetRequiredService<IOptions<PromptReductionOptions>>().Value;
 
-        options.UsePromptReducerRuntime.Should().BeFalse();
+        options.SummarizationPromptTemplate.Should().Be("condense {{prompt}} to {{max_tokens}}");
     }
 
     [Fact]
@@ -258,17 +444,28 @@ public class GrpcLlamaRuntimeClientTests
 
     private sealed class FakeGrpcTransport : IGrpcLlamaTransport
     {
+        private readonly object _capabilityResponsesSync = new();
+        private int _getCapabilitiesCallCount;
+
         public EstimateTokensReply? EstimateReply { get; init; }
+
+        public GetCapabilitiesReply? CapabilitiesReply { get; init; }
 
         public GenerateReply? GenerateReply { get; init; }
 
         public Exception? EstimateException { get; init; }
 
+        public Exception? CapabilitiesException { get; init; }
+
         public Exception? GenerateException { get; init; }
 
         public EstimateTokensRequest? LastEstimateRequest { get; private set; }
 
+        public int GetCapabilitiesCallCount => _getCapabilitiesCallCount;
+
         public GenerateRequest? LastGenerateRequest { get; private set; }
+
+        public Queue<Func<CancellationToken, Task<GetCapabilitiesReply>>> CapabilityResponses { get; } = new();
 
         public Task<EstimateTokensReply> EstimateTokensAsync(EstimateTokensRequest request, CancellationToken cancellationToken)
         {
@@ -277,6 +474,28 @@ public class GrpcLlamaRuntimeClientTests
             return EstimateException is not null
                 ? Task.FromException<EstimateTokensReply>(EstimateException)
                 : Task.FromResult(EstimateReply ?? new EstimateTokensReply());
+        }
+
+        public Task<GetCapabilitiesReply> GetCapabilitiesAsync(GetCapabilitiesRequest request, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _getCapabilitiesCallCount);
+
+            Func<CancellationToken, Task<GetCapabilitiesReply>>? responseFactory;
+            lock (_capabilityResponsesSync)
+            {
+                responseFactory = CapabilityResponses.Count > 0
+                    ? CapabilityResponses.Dequeue()
+                    : null;
+            }
+
+            if (responseFactory is not null)
+            {
+                return responseFactory(cancellationToken);
+            }
+
+            return CapabilitiesException is not null
+                ? Task.FromException<GetCapabilitiesReply>(CapabilitiesException)
+                : Task.FromResult(CapabilitiesReply ?? new GetCapabilitiesReply());
         }
 
         public Task<GenerateReply> GenerateAsync(GenerateRequest request, CancellationToken cancellationToken)

@@ -1,22 +1,11 @@
-﻿using GenProxy.Api.Services.Contracts;
+using GenProxy.Api.Host.Validation;
+using GenProxy.Api.Services.Contracts;
 using GenProxy.Api.Services.Contracts.Models;
-using Microsoft.AspNetCore.HttpLogging;
 
 namespace GenProxy.Api.Host.Endpoints;
 
 public static class ResponsesEndpoint
 {
-    private const HttpLoggingFields ResponsesHttpLoggingFields =
-        HttpLoggingFields.RequestMethod |
-        HttpLoggingFields.RequestPath |
-        HttpLoggingFields.RequestQuery |
-        HttpLoggingFields.RequestHeaders |
-        HttpLoggingFields.RequestBody |
-        HttpLoggingFields.ResponseStatusCode |
-        HttpLoggingFields.ResponseHeaders |
-        HttpLoggingFields.ResponseBody |
-        HttpLoggingFields.Duration;
-
     public static void MapResponsesEndpoint(this IEndpointRouteBuilder builder)
     {
         builder.MapPost("v1/responses", async (
@@ -24,20 +13,15 @@ public static class ResponsesEndpoint
                 IResponseGenerationService service,
                 CancellationToken cancellationToken) =>
             {
-                var command = new ResponseCreateCommand(
-                    request.Model,
-                    request.Input,
-                    request.MaxOutputTokens,
-                    request.Metadata);
-
+                var command = ResponseCreateRequestMapper.Map(request);
                 var result = await service.GenerateAsync(command, cancellationToken);
                 return Results.Ok(ResponsesFactory.ToResponse(result));
             })
             .WithTags("Responses")
             .WithName("CreateResponse")
             .WithSummary("Create a response from the configured generation runtime.")
-            .WithDescription("Accepts a partial Responses API-compatible request body. `model` and `input` are required. `max_output_tokens` and `metadata` are accepted for compatibility, but output token accounting is not yet returned by the runtime.")
-            .WithHttpLogging(ResponsesHttpLoggingFields)
+            .WithDescription(
+                $"Accepts a Responses-compatible request body. `model` is required. `input` supports exactly one user message with `type: message` and one or more `input_text` content parts. Top-level string input is not supported. `response_format.type` supports `{RequestedResponseFormats.Text}` and `{RequestedResponseFormats.JsonObject}`. `temperature`, `top_p`, and `max_output_tokens` are forwarded to the runtime, and support for those fields is runtime-defined. The current local `llama-runtime` stack uses greedy decoding and only accepts `max_output_tokens` when it matches the runtime's configured `GenerationMaxNewTokens`. Multi-turn structured input, `tools`, `tool_choice`, and streaming are not supported yet.")
             .AddEndpointFilter<Validation.ValidationEndpointFilter<ResponseCreateRequest>>()
             .RequireRateLimiting("public-api");
     }

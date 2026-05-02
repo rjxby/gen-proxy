@@ -1,8 +1,10 @@
 ﻿using GenProxy.Api.Integrations.Contracts;
+using GenProxy.Api.Integrations.Contracts.Models;
 using GenProxy.Api.Services.Contracts;
 using GenProxy.Api.Services.Contracts.Models;
 using Microsoft.Extensions.Logging;
 using System.Diagnostics;
+using System.Text.Json;
 
 namespace GenProxy.Api.Services.Implementation.Services;
 
@@ -20,6 +22,7 @@ public class ResponseGenerationService(
         var requestId = $"resp_{Guid.NewGuid():N}";
         var effectivePrompt = command.Input;
         var requestStopwatch = Stopwatch.StartNew();
+        var responseFormat = command.ResponseFormat;
 
         GenProxyMetrics.RequestsStarted.Add(1, KeyValuePair.Create<string, object?>("model", command.Model));
 
@@ -27,9 +30,19 @@ public class ResponseGenerationService(
         {
             _logger.LogInformation("Starting response generation. RequestId={RequestId} Model={Model}", requestId, command.Model);
 
+            if (responseFormat == RequestedResponseFormat.JsonObject)
+            {
+                var capabilities = await _generationRuntimeClient.GetCapabilitiesAsync(cancellationToken);
+                if (!capabilities.SupportsJsonObjectOutput)
+                {
+                    throw new ResponseFormatNotSupportedException(
+                        $"The configured generation runtime does not support response_format.type '{RequestedResponseFormats.GetWireName(RequestedResponseFormat.JsonObject)}'.");
+                }
+            }
+
             var estimation = await _generationRuntimeClient.EstimateTokensAsync(effectivePrompt, cancellationToken);
             var wasReduced = false;
-            var reductionStrategy = "none";
+            var reductionStrategy = PromptReductionStrategy.None;
 
             if (!estimation.Fits)
             {
@@ -44,7 +57,9 @@ public class ResponseGenerationService(
 
                 if (wasReduced)
                 {
-                    GenProxyMetrics.PromptReductions.Add(1, KeyValuePair.Create<string, object?>("strategy", reductionStrategy));
+                    GenProxyMetrics.PromptReductions.Add(
+                        1,
+                        KeyValuePair.Create<string, object?>("strategy", PromptReductionStrategyNames.GetWireName(reductionStrategy)));
                 }
 
                 estimation = await _generationRuntimeClient.EstimateTokensAsync(effectivePrompt, cancellationToken);
@@ -55,15 +70,31 @@ public class ResponseGenerationService(
                 }
             }
 
-            var generation = await _generationRuntimeClient.GenerateAsync(requestId, effectivePrompt, cancellationToken);
+            var generation = await _generationRuntimeClient.GenerateAsync(
+                requestId,
+                effectivePrompt,
+                new LlamaGenerationOptions(
+                    MapResponseFormat(responseFormat),
+                    command.MaxOutputTokens,
+                    command.Temperature,
+                    command.TopP),
+                cancellationToken);
+
+            if (responseFormat == RequestedResponseFormat.JsonObject)
+            {
+                EnsureJsonObjectResponseSatisfied(generation.Content, generation.RuntimeTrace);
+            }
+
             var response = new GeneratedResponse(
                 generation.RequestId,
-                command.Model,
-                generation.Result,
+                string.IsNullOrWhiteSpace(generation.Model) ? command.Model : generation.Model,
+                generation.Content,
                 effectivePrompt,
                 wasReduced,
                 reductionStrategy,
-                estimation.TokenCount,
+                generation.Usage?.InputTokens ?? estimation.TokenCount,
+                generation.Usage?.OutputTokens,
+                generation.Usage?.TotalTokens,
                 estimation.ContextSize,
                 estimation.ReservedOutputTokens,
                 estimation.MaxAllowedInputTokens,
@@ -78,7 +109,7 @@ public class ResponseGenerationService(
                 response.ResponseId,
                 response.Model,
                 response.WasReduced,
-                response.ReductionStrategy,
+                PromptReductionStrategyNames.GetWireName(response.ReductionStrategy),
                 response.InputTokens,
                 response.MaxAllowedInputTokens,
                 requestStopwatch.Elapsed.TotalMilliseconds);
@@ -92,5 +123,40 @@ public class ResponseGenerationService(
             GenProxyMetrics.RequestsFailed.Add(1, KeyValuePair.Create<string, object?>("model", command.Model));
             throw;
         }
+    }
+
+    private static void EnsureJsonObjectResponseSatisfied(string content, LlamaRuntimeTrace? runtimeTrace)
+    {
+        if (runtimeTrace is not { StructuredOutputApplied: true, StructuredOutputSatisfied: true })
+        {
+            throw new StructuredOutputNotSatisfiedException(
+                "The generation runtime did not satisfy the requested structured output.");
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(content);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                throw new StructuredOutputNotSatisfiedException(
+                    "The generation runtime did not return a valid JSON object.");
+            }
+        }
+        catch (JsonException)
+        {
+            throw new StructuredOutputNotSatisfiedException(
+                "The generation runtime did not return a valid JSON object.");
+        }
+    }
+
+    private static LlamaResponseFormatType? MapResponseFormat(RequestedResponseFormat? responseFormat)
+    {
+        return responseFormat switch
+        {
+            RequestedResponseFormat.Text => LlamaResponseFormatType.Text,
+            RequestedResponseFormat.JsonObject => LlamaResponseFormatType.JsonObject,
+            null => null,
+            _ => null
+        };
     }
 }

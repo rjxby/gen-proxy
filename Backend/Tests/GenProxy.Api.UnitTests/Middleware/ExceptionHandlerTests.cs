@@ -25,7 +25,7 @@ public class ExceptionHandlerTests
             .Returns(ValueTask.FromResult(true));
         var handler = new ExceptionHandler(logger, problemDetailsService.Object);
         var httpContext = new DefaultHttpContext();
-        var exception = new UpstreamPromptBudgetExceededException("Prompt exceeds input budget: 10 > 9 allowed.");
+        var exception = new LlamaRuntimePromptBudgetExceededException("Prompt exceeds input budget: 10 > 9 allowed.");
 
         var handled = await handler.TryHandleAsync(httpContext, exception, CancellationToken.None);
 
@@ -50,7 +50,7 @@ public class ExceptionHandlerTests
             .Returns(ValueTask.FromResult(true));
         var handler = new ExceptionHandler(logger, problemDetailsService.Object);
         var httpContext = new DefaultHttpContext();
-        var exception = new UpstreamRuntimeException("generation runtime offline");
+        var exception = new LlamaRuntimeCallException("generation runtime offline");
 
         var handled = await handler.TryHandleAsync(httpContext, exception, CancellationToken.None);
 
@@ -60,6 +60,79 @@ public class ExceptionHandlerTests
         logger.Entries[0].Level.Should().Be(LogLevel.Warning);
         logger.Entries[0].Exception.Should().BeSameAs(exception);
         logger.Entries[0].Message.Should().Contain("Upstream runtime unavailable.");
+    }
+
+    [Fact]
+    public async Task TryHandleAsync_WhenGenerationOverridesAreUnsupported_ReturnsBadRequestWithoutExceptionObject()
+    {
+        var logger = new TestLogger<ExceptionHandler>();
+        var problemDetailsService = new Mock<IProblemDetailsService>();
+        ProblemDetailsContext? capturedContext = null;
+        problemDetailsService
+            .Setup(service => service.TryWriteAsync(It.IsAny<ProblemDetailsContext>()))
+            .Callback<ProblemDetailsContext>(context => capturedContext = context)
+            .Returns(ValueTask.FromResult(true));
+        var handler = new ExceptionHandler(logger, problemDetailsService.Object);
+        var httpContext = new DefaultHttpContext();
+        var exception = new LlamaRuntimeUnsupportedGenerationOverridesException("Request-level generation overrides are not supported by this runtime yet.");
+
+        var handled = await handler.TryHandleAsync(httpContext, exception, CancellationToken.None);
+
+        handled.Should().BeTrue();
+        httpContext.Response.StatusCode.Should().Be(StatusCodes.Status400BadRequest);
+        capturedContext.Should().NotBeNull();
+        capturedContext!.ProblemDetails.Title.Should().Be("Unsupported generation overrides.");
+        logger.Entries.Should().ContainSingle();
+        logger.Entries[0].Level.Should().Be(LogLevel.Information);
+        logger.Entries[0].Exception.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task TryHandleAsync_WhenResponseFormatIsNotSupported_ReturnsBadRequest()
+    {
+        var logger = new TestLogger<ExceptionHandler>();
+        var problemDetailsService = new Mock<IProblemDetailsService>();
+        ProblemDetailsContext? capturedContext = null;
+        problemDetailsService
+            .Setup(service => service.TryWriteAsync(It.IsAny<ProblemDetailsContext>()))
+            .Callback<ProblemDetailsContext>(context => capturedContext = context)
+            .Returns(ValueTask.FromResult(true));
+        var handler = new ExceptionHandler(logger, problemDetailsService.Object);
+        var httpContext = new DefaultHttpContext();
+        var exception = new GenProxy.Api.Services.Contracts.ResponseFormatNotSupportedException("json_object is unavailable.");
+
+        var handled = await handler.TryHandleAsync(httpContext, exception, CancellationToken.None);
+
+        handled.Should().BeTrue();
+        httpContext.Response.StatusCode.Should().Be(StatusCodes.Status400BadRequest);
+        capturedContext.Should().NotBeNull();
+        capturedContext!.ProblemDetails.Title.Should().Be("Unsupported response format.");
+        logger.Entries.Should().ContainSingle();
+        logger.Entries[0].Exception.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task TryHandleAsync_WhenStructuredOutputRequirementIsNotSatisfied_ReturnsBadGateway()
+    {
+        var logger = new TestLogger<ExceptionHandler>();
+        var problemDetailsService = new Mock<IProblemDetailsService>();
+        ProblemDetailsContext? capturedContext = null;
+        problemDetailsService
+            .Setup(service => service.TryWriteAsync(It.IsAny<ProblemDetailsContext>()))
+            .Callback<ProblemDetailsContext>(context => capturedContext = context)
+            .Returns(ValueTask.FromResult(true));
+        var handler = new ExceptionHandler(logger, problemDetailsService.Object);
+        var httpContext = new DefaultHttpContext();
+        var exception = new GenProxy.Api.Services.Contracts.StructuredOutputNotSatisfiedException("runtime did not satisfy structured output.");
+
+        var handled = await handler.TryHandleAsync(httpContext, exception, CancellationToken.None);
+
+        handled.Should().BeTrue();
+        httpContext.Response.StatusCode.Should().Be(StatusCodes.Status502BadGateway);
+        capturedContext.Should().NotBeNull();
+        capturedContext!.ProblemDetails.Title.Should().Be("Structured output requirement not satisfied.");
+        logger.Entries.Should().ContainSingle();
+        logger.Entries[0].Exception.Should().BeSameAs(exception);
     }
 
     [Fact]
@@ -75,7 +148,7 @@ public class ExceptionHandlerTests
         var handler = new ExceptionHandler(logger, problemDetailsService.Object);
         var httpContext = new DefaultHttpContext();
         httpContext.TraceIdentifier = "http-trace-id";
-        var exception = new UpstreamRuntimeException("generation runtime offline");
+        var exception = new LlamaRuntimeCallException("generation runtime offline");
 
         using var activity = new Activity("test-request");
         activity.Start();
