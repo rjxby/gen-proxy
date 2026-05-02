@@ -1,21 +1,27 @@
 syntax = "proto3";
 
 option csharp_namespace = "LlamaRuntime.Presentation.Grpc";
-package llama.v1;
+package llama.v2;
 
 service Generator {
   rpc Generate (GenerateRequest) returns (GenerateReply);
   rpc EstimateTokens (EstimateTokensRequest) returns (EstimateTokensReply);
+  rpc GetCapabilities (GetCapabilitiesRequest) returns (GetCapabilitiesReply);
 }
 
 message GenerateRequest {
   string request_id = 1;
   string prompt = 2;
+  ResponseFormat response_format = 3;
+  GenerationOptions generation = 4;
 }
 
 message GenerateReply {
   string request_id = 1;
-  string result = 2;
+  string model = 2;
+  string content = 3;
+  Usage usage = 4;
+  RuntimeTrace runtime_trace = 5;
 }
 
 message EstimateTokensRequest {
@@ -28,4 +34,37 @@ message EstimateTokensReply {
   int32 reserved_output_tokens = 3;
   int32 max_allowed_input_tokens = 4;
   bool fits = 5;
+}
+
+message GetCapabilitiesRequest {}
+
+message GetCapabilitiesReply {
+  string model_id = 1;
+  int32 context_size = 2;
+  bool supports_structured_output = 3;
+  bool supports_json_object_output = 4;
+  bool supports_speculative_decoding = 5;
+  string tokenizer_family = 6;
+}
+
+message ResponseFormat {
+  optional string type = 1;
+}
+
+message GenerationOptions {
+  optional float temperature = 1;
+  optional int32 max_output_tokens = 2;
+  optional float top_p = 3;
+}
+
+message Usage {
+  int32 input_tokens = 1;
+  int32 output_tokens = 2;
+  int32 total_tokens = 3;
+}
+
+message RuntimeTrace {
+  bool structured_output_applied = 1;
+  bool structured_output_satisfied = 2;
+  bool speculative_decoding_used = 3;
 }

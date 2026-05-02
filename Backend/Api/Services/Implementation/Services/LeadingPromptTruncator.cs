@@ -14,7 +14,7 @@ public sealed class LeadingPromptTruncator(IGenerationRuntimeClient generationRu
     {
         if (string.IsNullOrEmpty(prompt))
         {
-            return new PromptReductionResult(prompt, false, "none");
+            return new PromptReductionResult(prompt, false, PromptReductionStrategy.None);
         }
 
         var currentPrompt = prompt;
@@ -38,6 +38,9 @@ public sealed class LeadingPromptTruncator(IGenerationRuntimeClient generationRu
         }
 
         var wasReduced = !string.Equals(prompt, currentPrompt, StringComparison.Ordinal);
-        return new PromptReductionResult(currentPrompt, wasReduced, wasReduced ? "leading_truncation" : "none");
+        return new PromptReductionResult(
+            currentPrompt,
+            wasReduced,
+            wasReduced ? PromptReductionStrategy.LeadingTruncation : PromptReductionStrategy.None);
     }
 }

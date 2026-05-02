@@ -1,4 +1,6 @@
-﻿namespace GenProxy.Api.Services.Contracts.Models;
+﻿using GenProxy.Api.Services.Contracts;
+
+namespace GenProxy.Api.Services.Contracts.Models;
 
 public record GeneratedResponse(
     string ResponseId,
@@ -6,8 +8,10 @@ public record GeneratedResponse(
     string OutputText,
     string FinalPrompt,
     bool WasReduced,
-    string ReductionStrategy,
+    PromptReductionStrategy ReductionStrategy,
     int InputTokens,
+    int? OutputTokens,
+    int? TotalTokens,
     int ContextSize,
     int ReservedOutputTokens,
     int MaxAllowedInputTokens,

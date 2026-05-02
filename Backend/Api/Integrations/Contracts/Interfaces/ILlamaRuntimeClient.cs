@@ -6,5 +6,11 @@ public interface ILlamaRuntimeClient
 {
     Task<TokenEstimation> EstimateTokensAsync(string prompt, CancellationToken cancellationToken);
 
-    Task<LlamaGenerationResult> GenerateAsync(string requestId, string prompt, CancellationToken cancellationToken);
+    Task<LlamaCapabilities> GetCapabilitiesAsync(CancellationToken cancellationToken);
+
+    Task<LlamaGenerationResult> GenerateAsync(
+        string requestId,
+        string prompt,
+        LlamaGenerationOptions? options,
+        CancellationToken cancellationToken);
 }

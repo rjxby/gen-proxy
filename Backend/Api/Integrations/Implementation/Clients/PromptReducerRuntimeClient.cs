@@ -10,6 +10,13 @@ public sealed class PromptReducerRuntimeClient(ILlamaRuntimeClient inner) : IPro
     public Task<TokenEstimation> EstimateTokensAsync(string prompt, CancellationToken cancellationToken)
         => _inner.EstimateTokensAsync(prompt, cancellationToken);
 
-    public Task<LlamaGenerationResult> GenerateAsync(string requestId, string prompt, CancellationToken cancellationToken)
-        => _inner.GenerateAsync(requestId, prompt, cancellationToken);
+    public Task<LlamaCapabilities> GetCapabilitiesAsync(CancellationToken cancellationToken)
+        => _inner.GetCapabilitiesAsync(cancellationToken);
+
+    public Task<LlamaGenerationResult> GenerateAsync(
+        string requestId,
+        string prompt,
+        LlamaGenerationOptions? options,
+        CancellationToken cancellationToken)
+        => _inner.GenerateAsync(requestId, prompt, options, cancellationToken);
 }

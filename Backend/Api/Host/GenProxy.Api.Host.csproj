@@ -10,6 +10,7 @@
     <PackageReference Include="Swashbuckle.AspNetCore" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\Services\Contracts\GenProxy.Api.Services.Contracts.csproj" />
     <ProjectReference Include="..\Integrations\Implementation\GenProxy.Api.Integrations.Implementation.csproj" />
     <ProjectReference Include="..\Services\Implementation\GenProxy.Api.Services.Implementation.csproj" />
   </ItemGroup>

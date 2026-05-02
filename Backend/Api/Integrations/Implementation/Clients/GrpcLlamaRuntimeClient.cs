@@ -10,6 +10,8 @@ namespace GenProxy.Api.Integrations.Implementation.Clients;
 public sealed class GrpcLlamaRuntimeClient : ILlamaRuntimeClient
 {
     private const string PromptBudgetExceededMarker = "Prompt exceeds input budget";
+    private const string RuntimeErrorCodeTrailerName = "runtime-error-code";
+    private const string UnsupportedGenerationOverridesCode = "unsupported_generation_overrides";
     private readonly IGrpcLlamaTransport _transport;
     private readonly string _runtimeName;
     private readonly ILogger<GrpcLlamaRuntimeClient> _logger;
@@ -75,18 +77,116 @@ public sealed class GrpcLlamaRuntimeClient : ILlamaRuntimeClient
         }
     }
 
-    public async Task<LlamaGenerationResult> GenerateAsync(string requestId, string prompt, CancellationToken cancellationToken)
+    public async Task<LlamaCapabilities> GetCapabilitiesAsync(CancellationToken cancellationToken)
     {
         var stopwatch = Stopwatch.StartNew();
 
         try
         {
-            var reply = await _transport.GenerateAsync(
-                new GenerateRequest
+            var reply = await _transport.GetCapabilitiesAsync(
+                new GetCapabilitiesRequest(),
+                cancellationToken);
+
+            stopwatch.Stop();
+            GenProxyMetrics.UpstreamLatencyMs.Record(
+                stopwatch.Elapsed.TotalMilliseconds,
+                KeyValuePair.Create<string, object?>("operation", "get_capabilities"),
+                KeyValuePair.Create<string, object?>("runtime", _runtimeName));
+
+            var capabilities = new LlamaCapabilities(
+                reply.ModelId,
+                reply.ContextSize,
+                reply.SupportsStructuredOutput,
+                reply.SupportsJsonObjectOutput,
+                reply.SupportsSpeculativeDecoding,
+                reply.TokenizerFamily);
+
+            _logger.LogInformation(
+                "Upstream capability fetch completed. Runtime={Runtime} ModelId={ModelId} JsonObjectOutput={SupportsJsonObjectOutput} DurationMs={DurationMs}",
+                _runtimeName,
+                capabilities.ModelId,
+                capabilities.SupportsJsonObjectOutput,
+                stopwatch.Elapsed.TotalMilliseconds);
+
+            return capabilities;
+        }
+        catch (RpcException exception)
+        {
+            stopwatch.Stop();
+            GenProxyMetrics.UpstreamFailures.Add(1, KeyValuePair.Create<string, object?>("runtime", _runtimeName));
+            throw CreateUpstreamException("get capabilities", exception);
+        }
+        catch (HttpRequestException exception)
+        {
+            stopwatch.Stop();
+            GenProxyMetrics.UpstreamFailures.Add(1, KeyValuePair.Create<string, object?>("runtime", _runtimeName));
+            throw CreateUpstreamException("get capabilities", exception);
+        }
+        catch (Exception exception)
+        {
+            stopwatch.Stop();
+            if (exception is OperationCanceledException)
+            {
+                throw;
+            }
+
+            throw;
+        }
+    }
+
+    public async Task<LlamaGenerationResult> GenerateAsync(
+        string requestId,
+        string prompt,
+        LlamaGenerationOptions? options,
+        CancellationToken cancellationToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+
+        try
+        {
+            var request = new GenerateRequest
+            {
+                RequestId = requestId,
+                Prompt = prompt
+            };
+
+            if (options?.ResponseFormat is LlamaResponseFormatType configuredResponseFormat)
+            {
+                request.ResponseFormat = new ResponseFormat
                 {
-                    RequestId = requestId,
-                    Prompt = prompt
-                },
+                    Type = configuredResponseFormat switch
+                    {
+                        LlamaResponseFormatType.Text => "text",
+                        LlamaResponseFormatType.JsonObject => "json_object",
+                        _ => throw new InvalidOperationException($"Unsupported runtime response format '{configuredResponseFormat}'.")
+                    }
+                };
+            }
+
+            if (options?.MaxOutputTokens is not null ||
+                options?.Temperature is not null ||
+                options?.TopP is not null)
+            {
+                request.Generation = new GenerationOptions();
+
+                if (options?.MaxOutputTokens is int configuredMaxOutputTokens)
+                {
+                    request.Generation.MaxOutputTokens = configuredMaxOutputTokens;
+                }
+
+                if (options?.Temperature is float configuredTemperature)
+                {
+                    request.Generation.Temperature = configuredTemperature;
+                }
+
+                if (options?.TopP is float configuredTopP)
+                {
+                    request.Generation.TopP = configuredTopP;
+                }
+            }
+
+            var reply = await _transport.GenerateAsync(
+                request,
                 cancellationToken: cancellationToken);
 
             stopwatch.Stop();
@@ -100,7 +200,19 @@ public sealed class GrpcLlamaRuntimeClient : ILlamaRuntimeClient
                 requestId,
                 stopwatch.Elapsed.TotalMilliseconds);
 
-            return new LlamaGenerationResult(reply.RequestId, reply.Result);
+            return new LlamaGenerationResult(
+                reply.RequestId,
+                reply.Model,
+                reply.Content,
+                reply.Usage is null
+                    ? null
+                    : new LlamaUsage(reply.Usage.InputTokens, reply.Usage.OutputTokens, reply.Usage.TotalTokens),
+                reply.RuntimeTrace is null
+                    ? null
+                    : new LlamaRuntimeTrace(
+                        reply.RuntimeTrace.StructuredOutputApplied,
+                        reply.RuntimeTrace.StructuredOutputSatisfied,
+                        reply.RuntimeTrace.SpeculativeDecodingUsed));
         }
         catch (RpcException exception)
         {
@@ -110,6 +222,12 @@ public sealed class GrpcLlamaRuntimeClient : ILlamaRuntimeClient
             if (promptBudgetException is not null)
             {
                 throw promptBudgetException;
+            }
+
+            var unsupportedGenerationOverridesException = TryCreateUnsupportedGenerationOverridesException(exception);
+            if (unsupportedGenerationOverridesException is not null)
+            {
+                throw unsupportedGenerationOverridesException;
             }
 
             throw CreateUpstreamException("generate", exception);
@@ -122,13 +240,13 @@ public sealed class GrpcLlamaRuntimeClient : ILlamaRuntimeClient
         }
     }
 
-    private UpstreamRuntimeException CreateUpstreamException(string operation, Exception exception)
+    private LlamaRuntimeCallException CreateUpstreamException(string operation, Exception exception)
     {
         _logger.LogWarning(exception, "Upstream runtime call failed. Runtime={Runtime} Operation={Operation}", _runtimeName, operation);
-        return new UpstreamRuntimeException($"Failed to {operation} against the {_runtimeName} runtime.", exception);
+        return new LlamaRuntimeCallException($"Failed to {operation} against the {_runtimeName} runtime.", exception);
     }
 
-    private UpstreamPromptBudgetExceededException? TryCreatePromptBudgetExceededException(RpcException exception)
+    private LlamaRuntimePromptBudgetExceededException? TryCreatePromptBudgetExceededException(RpcException exception)
     {
         if (_runtimeName == "prompt_reducer" &&
             exception.StatusCode == StatusCode.InvalidArgument &&
@@ -137,9 +255,32 @@ public sealed class GrpcLlamaRuntimeClient : ILlamaRuntimeClient
             _logger.LogInformation(
                 "Upstream runtime rejected prompt due to token budget. Runtime={Runtime}",
                 _runtimeName);
-            return new UpstreamPromptBudgetExceededException(exception.Status.Detail, exception);
+            return new LlamaRuntimePromptBudgetExceededException(exception.Status.Detail, exception);
         }
 
         return null;
+    }
+
+    private LlamaRuntimeUnsupportedGenerationOverridesException? TryCreateUnsupportedGenerationOverridesException(RpcException exception)
+    {
+        if (exception.StatusCode != StatusCode.InvalidArgument)
+        {
+            return null;
+        }
+
+        var errorCode = exception.Trailers
+            .FirstOrDefault(entry => string.Equals(entry.Key, RuntimeErrorCodeTrailerName, StringComparison.Ordinal))
+            ?.Value;
+
+        if (!string.Equals(errorCode, UnsupportedGenerationOverridesCode, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        _logger.LogInformation(
+            "Upstream runtime rejected request-level generation overrides. Runtime={Runtime}",
+            _runtimeName);
+
+        return new LlamaRuntimeUnsupportedGenerationOverridesException(exception.Status.Detail, exception);
     }
 }

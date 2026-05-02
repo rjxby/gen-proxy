@@ -1,4 +1,5 @@
 using GenProxy.Api.Integrations.Contracts;
+using GenProxy.Api.Integrations.Contracts.Configuration;
 using GenProxy.Api.Services.Contracts;
 using GenProxy.Api.Services.Contracts.Models;
 using GenProxy.Api.Services.Implementation.Configuration;
@@ -8,18 +9,20 @@ namespace GenProxy.Api.Services.Implementation.Services;
 
 public sealed class LlmPromptSummarizer(
     IPromptReducerRuntimeClient runtimeClient,
+    IOptions<PromptReducerRuntimeOptions> runtimeOptions,
     IOptions<PromptReductionOptions> options) : IPromptReducer
 {
     public int Order => 100;
 
     private readonly IPromptReducerRuntimeClient _runtimeClient = runtimeClient;
+    private readonly PromptReducerRuntimeOptions _runtimeOptions = runtimeOptions.Value;
     private readonly PromptReductionOptions _options = options.Value;
 
     public async Task<PromptReductionResult> ReduceAsync(string prompt, int maxAllowedInputTokens, CancellationToken cancellationToken)
     {
-        if (!_options.UsePromptReducerRuntime)
+        if (!_runtimeOptions.Enabled)
         {
-            return new PromptReductionResult(prompt, false, "none");
+            return new PromptReductionResult(prompt, false, PromptReductionStrategy.None);
         }
 
         var reductionPrompt = _options.SummarizationPromptTemplate
@@ -31,18 +34,19 @@ public sealed class LlmPromptSummarizer(
             var response = await _runtimeClient.GenerateAsync(
                 $"reduce_{Guid.NewGuid():N}",
                 reductionPrompt,
+                options: null,
                 cancellationToken);
 
-            var reducedPrompt = response.Result.Trim();
+            var reducedPrompt = response.Content.Trim();
             var wasReduced = !string.Equals(prompt, reducedPrompt, StringComparison.Ordinal);
 
-            return new PromptReductionResult(reducedPrompt, wasReduced, "llm_summarizer");
+            return new PromptReductionResult(reducedPrompt, wasReduced, PromptReductionStrategy.LlmSummarizer);
         }
-        catch (UpstreamRuntimeException)
+        catch (LlamaRuntimeCallException)
         {
             throw;
         }
-        catch (UpstreamPromptBudgetExceededException)
+        catch (LlamaRuntimePromptBudgetExceededException)
         {
             throw;
         }

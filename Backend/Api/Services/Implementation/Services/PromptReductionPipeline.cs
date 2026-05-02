@@ -1,5 +1,5 @@
-using GenProxy.Api.Services.Contracts;
 using GenProxy.Api.Services.Contracts.Models;
+using GenProxy.Api.Services.Contracts;
 
 namespace GenProxy.Api.Services.Implementation.Services;
 
@@ -13,7 +13,7 @@ public sealed class PromptReductionPipeline(IEnumerable<IPromptReducer> reducers
     {
         var currentPrompt = prompt;
         var wasReduced = false;
-        var strategy = "none";
+        var strategy = PromptReductionStrategy.None;
 
         foreach (var reducer in _reducers)
         {

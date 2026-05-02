@@ -4,4 +4,7 @@ public record ResponseCreateCommand(
     string Model,
     string Input,
     int? MaxOutputTokens,
-    IReadOnlyDictionary<string, string>? Metadata);
+    float? Temperature,
+    float? TopP,
+    IReadOnlyDictionary<string, string>? Metadata,
+    RequestedResponseFormat? ResponseFormat);

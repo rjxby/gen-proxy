@@ -1,4 +1,5 @@
 using GenProxy.Api.Integrations.Contracts;
+using GenProxy.Api.Integrations.Contracts.Configuration;
 using GenProxy.Api.Integrations.Implementation.Clients;
 using GenProxy.Api.Integrations.Implementation.Configuration;
 
@@ -8,8 +9,7 @@ public static class SetupIntegrationLayer
 {
     public static IServiceCollection AddIntegrationLayer(
         this IServiceCollection services,
-        IConfiguration configuration,
-        IHostEnvironment environment)
+        IConfiguration configuration)
     {
         services
             .AddOptions<GenerationRuntimeOptions>()
@@ -23,7 +23,7 @@ public static class SetupIntegrationLayer
             .AddOptions<PromptReducerRuntimeOptions>()
             .Bind(configuration.GetSection(PromptReducerRuntimeOptions.SectionName))
             .Validate(
-                options => IsValidRuntimeAddress(options.Address),
+                options => !options.Enabled || IsValidRuntimeAddress(options.Address),
                 "Prompt reducer runtime address must be an absolute HTTPS URI.")
             .ValidateOnStart();
 
@@ -40,18 +40,22 @@ public static class SetupIntegrationLayer
             return new GenerationRuntimeClient(runtimeClient);
         });
 
-        services.AddSingleton<IPromptReducerRuntimeClient>(serviceProvider =>
+        var isPromptReducerRuntimeEnabled = PromptReducerRuntimeConfiguration.IsEnabled(configuration);
+        if (isPromptReducerRuntimeEnabled)
         {
-            var options = serviceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<PromptReducerRuntimeOptions>>().Value;
-            var loggerFactory = serviceProvider.GetRequiredService<ILoggerFactory>();
-            var runtimeClient = new GrpcLlamaRuntimeClient(
-                runtimeName: "prompt_reducer",
-                address: options.Address,
-                logger: loggerFactory.CreateLogger<GrpcLlamaRuntimeClient>(),
-                apiKey: options.ApiKey);
+            services.AddSingleton<IPromptReducerRuntimeClient>(serviceProvider =>
+            {
+                var options = serviceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<PromptReducerRuntimeOptions>>().Value;
+                var loggerFactory = serviceProvider.GetRequiredService<ILoggerFactory>();
+                var runtimeClient = new GrpcLlamaRuntimeClient(
+                    runtimeName: "prompt_reducer",
+                    address: options.Address,
+                    logger: loggerFactory.CreateLogger<GrpcLlamaRuntimeClient>(),
+                    apiKey: options.ApiKey);
 
-            return new PromptReducerRuntimeClient(runtimeClient);
-        });
+                return new PromptReducerRuntimeClient(runtimeClient);
+            });
+        }
 
         return services;
     }

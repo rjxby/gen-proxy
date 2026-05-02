@@ -1,8 +1,10 @@
-namespace GenProxy.Api.Integrations.Implementation.Configuration;
+namespace GenProxy.Api.Integrations.Contracts.Configuration;
 
 public class PromptReducerRuntimeOptions
 {
     public const string SectionName = "PromptReducerRuntime";
+
+    public bool Enabled { get; set; } = true;
 
     public string Address { get; set; } = "https://localhost:50052";
 

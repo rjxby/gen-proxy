@@ -17,12 +17,12 @@ public class PromptReductionPipelineTests
             new TestPromptReducer("fallback", 200, (_, _, _) =>
             {
                 calls.Add("fallback");
-                return Task.FromResult(new PromptReductionResult("fallback", true, "leading_truncation"));
+                return Task.FromResult(new PromptReductionResult("fallback", true, PromptReductionStrategy.LeadingTruncation));
             }),
             new TestPromptReducer("summary", 100, (_, _, _) =>
             {
                 calls.Add("summary");
-                return Task.FromResult(new PromptReductionResult("short", true, "llm_summarizer"));
+                return Task.FromResult(new PromptReductionResult("short", true, PromptReductionStrategy.LlmSummarizer));
             })
         ]);
 
@@ -31,7 +31,7 @@ public class PromptReductionPipelineTests
         calls.Should().Equal("summary");
         result.Prompt.Should().Be("short");
         result.WasReduced.Should().BeTrue();
-        result.Strategy.Should().Be("llm_summarizer");
+        result.Strategy.Should().Be(PromptReductionStrategy.LlmSummarizer);
     }
 
     [Fact]
@@ -43,12 +43,12 @@ public class PromptReductionPipelineTests
             new TestPromptReducer("fallback", 200, (_, _, _) =>
             {
                 calls.Add("fallback");
-                return Task.FromResult(new PromptReductionResult("short", true, "leading_truncation"));
+                return Task.FromResult(new PromptReductionResult("short", true, PromptReductionStrategy.LeadingTruncation));
             }),
             new TestPromptReducer("summary", 100, (_, _, _) =>
             {
                 calls.Add("summary");
-                return Task.FromResult(new PromptReductionResult("prompt", false, "none"));
+                return Task.FromResult(new PromptReductionResult("prompt", false, PromptReductionStrategy.None));
             })
         ]);
 
@@ -57,7 +57,7 @@ public class PromptReductionPipelineTests
         calls.Should().Equal("summary", "fallback");
         result.Prompt.Should().Be("short");
         result.WasReduced.Should().BeTrue();
-        result.Strategy.Should().Be("leading_truncation");
+        result.Strategy.Should().Be(PromptReductionStrategy.LeadingTruncation);
     }
 
     [Fact]

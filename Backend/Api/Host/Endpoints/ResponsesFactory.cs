@@ -8,18 +8,19 @@ internal static class ResponsesFactory
     {
         return new ResponsesApiResponse(
             result.ResponseId,
-            "response",
+            ResponseObjectType.Response,
             result.CreatedAt.ToUnixTimeSeconds(),
-            "completed",
+            ResponseStatus.Completed,
             result.Model,
             [
                 new ResponseOutputItem(
                     $"msg_{Guid.NewGuid():N}",
-                    "message",
-                    "assistant",
-                    [new ResponseContentPart("output_text", result.OutputText)])
+                    ResponseItemType.Message,
+                    ResponseStatus.Completed,
+                    ResponseRole.Assistant,
+                    [new ResponseContentPart(ResponseContentPartType.OutputText, result.OutputText)])
             ],
             result.OutputText,
-            new ResponseUsage(result.InputTokens, null, null));
+            new ResponseUsage(result.InputTokens, result.OutputTokens, result.TotalTokens));
     }
 }
