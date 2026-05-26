@@ -231,6 +231,175 @@ public class ResponseCreateRequestValidatorTests
     }
 
     [Fact]
+    public async Task ValidateAsync_WhenResponseFormatTypeIsLegacyJsonObject_ReturnsError()
+    {
+        var result = await _validator.ValidateAsync(new ResponseCreateRequest
+        {
+            Model = "stories15m",
+            Input = CreateInput("hello"),
+            ResponseFormat = new ResponseFormatRequest
+            {
+                Type = "json_object"
+            }
+        });
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(error => error.PropertyName == "response_format.type");
+    }
+
+    [Fact]
+    public async Task ValidateAsync_WhenResponseFormatTypeIsText_ReturnsSuccess()
+    {
+        var result = await _validator.ValidateAsync(new ResponseCreateRequest
+        {
+            Model = "stories15m",
+            Input = CreateInput("hello"),
+            ResponseFormat = new ResponseFormatRequest
+            {
+                Type = "text"
+            }
+        });
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ValidateAsync_WhenJsonSchemaResponseFormatIsValid_ReturnsSuccess()
+    {
+        var result = await _validator.ValidateAsync(new ResponseCreateRequest
+        {
+            Model = "stories15m",
+            Input = CreateInput("hello"),
+            ResponseFormat = CreateJsonSchemaResponseFormat()
+        });
+
+        result.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ValidateAsync_WhenJsonSchemaResponseFormatIsMissingJsonSchema_ReturnsError()
+    {
+        var result = await _validator.ValidateAsync(new ResponseCreateRequest
+        {
+            Model = "stories15m",
+            Input = CreateInput("hello"),
+            ResponseFormat = new ResponseFormatRequest
+            {
+                Type = "json_schema"
+            }
+        });
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(error => error.PropertyName == "response_format.json_schema");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("bad name")]
+    [InlineData("bad.name")]
+    public async Task ValidateAsync_WhenJsonSchemaNameIsInvalid_ReturnsError(string name)
+    {
+        var responseFormat = CreateJsonSchemaResponseFormat();
+        responseFormat.JsonSchema!.Name = name;
+
+        var result = await _validator.ValidateAsync(new ResponseCreateRequest
+        {
+            Model = "stories15m",
+            Input = CreateInput("hello"),
+            ResponseFormat = responseFormat
+        });
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(error => error.PropertyName == "response_format.json_schema.name");
+    }
+
+    [Fact]
+    public async Task ValidateAsync_WhenJsonSchemaNameIsTooLong_ReturnsError()
+    {
+        var responseFormat = CreateJsonSchemaResponseFormat();
+        responseFormat.JsonSchema!.Name = new string('a', 65);
+
+        var result = await _validator.ValidateAsync(new ResponseCreateRequest
+        {
+            Model = "stories15m",
+            Input = CreateInput("hello"),
+            ResponseFormat = responseFormat
+        });
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(error => error.PropertyName == "response_format.json_schema.name");
+    }
+
+    [Fact]
+    public async Task ValidateAsync_WhenJsonSchemaPayloadIsNotObject_ReturnsError()
+    {
+        var responseFormat = CreateJsonSchemaResponseFormat();
+        responseFormat.JsonSchema!.Schema = JsonSerializer.SerializeToElement(new[] { "not", "object" });
+
+        var result = await _validator.ValidateAsync(new ResponseCreateRequest
+        {
+            Model = "stories15m",
+            Input = CreateInput("hello"),
+            ResponseFormat = responseFormat
+        });
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(error => error.PropertyName == "response_format.json_schema.schema");
+    }
+
+    [Fact]
+    public async Task ValidateAsync_WhenJsonSchemaPayloadIsMissing_ReturnsError()
+    {
+        var responseFormat = CreateJsonSchemaResponseFormat();
+        responseFormat.JsonSchema!.Schema = null;
+
+        var result = await _validator.ValidateAsync(new ResponseCreateRequest
+        {
+            Model = "stories15m",
+            Input = CreateInput("hello"),
+            ResponseFormat = responseFormat
+        });
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(error => error.PropertyName == "response_format.json_schema.schema");
+    }
+
+
+    [Fact]
+    public async Task ValidateAsync_WhenJsonSchemaStrictIsFalse_ReturnsError()
+    {
+        var responseFormat = CreateJsonSchemaResponseFormat();
+        responseFormat.JsonSchema!.Strict = false;
+
+        var result = await _validator.ValidateAsync(new ResponseCreateRequest
+        {
+            Model = "stories15m",
+            Input = CreateInput("hello"),
+            ResponseFormat = responseFormat
+        });
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(error => error.PropertyName == "response_format.json_schema.strict");
+    }
+
+    [Fact]
+    public async Task ValidateAsync_WhenTextResponseFormatHasJsonSchema_ReturnsError()
+    {
+        var responseFormat = CreateJsonSchemaResponseFormat();
+        responseFormat.Type = "text";
+
+        var result = await _validator.ValidateAsync(new ResponseCreateRequest
+        {
+            Model = "stories15m",
+            Input = CreateInput("hello"),
+            ResponseFormat = responseFormat
+        });
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(error => error.PropertyName == "response_format.json_schema");
+    }
+
+    [Fact]
     public async Task ValidateAsync_WhenStreamEnabled_ReturnsError()
     {
         var result = await _validator.ValidateAsync(new ResponseCreateRequest
@@ -348,6 +517,29 @@ public class ResponseCreateRequestValidatorTests
                     Text = text
                 })
                 .ToList()
+        };
+    }
+
+    private static ResponseFormatRequest CreateJsonSchemaResponseFormat()
+    {
+        return new ResponseFormatRequest
+        {
+            Type = "json_schema",
+            JsonSchema = new JsonSchemaResponseFormatRequest
+            {
+                Name = "result",
+                Schema = JsonSerializer.SerializeToElement(new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        ok = new { type = "boolean" }
+                    },
+                    required = new[] { "ok" },
+                    additionalProperties = false
+                }),
+                Strict = true
+            }
         };
     }
 }

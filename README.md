@@ -18,7 +18,7 @@ PromptReducerRuntime__Address=https://localhost:50052 \
 
 Defaults for request limits, runtime addresses, and prompt-reduction behavior are compiled into the binary. Outside Development, you still need to supply at least one API key through environment variables or another standard ASP.NET Core configuration source.
 
-Compatibility note: the current local stack workflow is pinned to `llama-runtime v0.4.0`.
+Compatibility note: the current local stack workflow is pinned to `llama-runtime v0.5.0`.
 
 By default, `gen-proxy` does not log request or response bodies in ASP.NET Core HTTP logs. If you set `ResponsesLogging:LogBodies=true`, `gen-proxy` will include request and response bodies in HTTP logs globally.
 
@@ -81,10 +81,13 @@ Current behavior:
 - The input message must use `type: "message"`, `role: "user"`, and one or more `input_text` content parts.
 - Top-level string input is not supported.
 - Multi-turn structured input and non-user structured roles are rejected in this stage.
-- `response_format.type` is optional and supports `text` and `json_object`.
-- `json_object` requests are rejected with `400` if the configured generation runtime does not advertise support through `GetCapabilities`.
-- `json_object` requests are rejected with `502` unless the runtime reports that structured output was applied and satisfied, and the returned content is a valid JSON object.
-- Schema-based structured output is not supported in this stage.
+- `response_format.type` is optional and supports `text` and `json_schema`.
+- `json_schema` requests use the OpenAI-compatible nested `json_schema` object and are sent to `llama-runtime v0.5.0` as runtime response format `json` plus the raw schema payload.
+- `json_schema` requests are rejected with `400` if the configured generation runtime does not advertise structured JSON output support through `GetCapabilities`.
+- `json_schema` requests are rejected with `502` unless the runtime reports that structured output was applied and satisfied, and the returned content is a valid JSON object.
+- The runtime supports a strict JSON Schema subset and remains the source of truth for schema-subset validation.
+- Example structured format:
+  `{"type":"json_schema","json_schema":{"name":"result","schema":{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"],"additionalProperties":false},"strict":true}}`
 - `temperature`, `top_p`, and `max_output_tokens` are forwarded to the runtime generate call, and support for those fields is runtime-defined.
 - In the current local `llama-runtime` stack, request-level generation uses greedy defaults. Non-default `temperature` and `top_p` are rejected.
 - `max_output_tokens` is currently a placeholder compatibility field and is accepted only when it matches the runtime's configured `Llama:Native:GenerationMaxNewTokens` value. The local stack default is `512`.
@@ -222,7 +225,7 @@ make stack-run
 ```
 
 `make stack-run` will:
-- download and use `llama-runtime v0.4.0` by default unless `LLAMA_RUNTIME_VERSION` is set explicitly
+- download and use `llama-runtime v0.5.0` by default unless `LLAMA_RUNTIME_VERSION` is set explicitly
 - cache release artifacts in `.runtime-cache/`
 - write runtime logs to `.runtime-logs/`
 - write PID files and runtime state to `.runtime-run/`
@@ -255,6 +258,7 @@ Terminal 2 with the Make wrapper:
 
 ```bash
 make demo PROMPT="Explain what this proxy does in one paragraph."
+make demo DEMO_REQUEST_ARGS=--json PROMPT="Return whether the demo is reachable."
 printf 'Summarize this request.\nKeep it to two bullet points.\n' | make demo
 ```
 
@@ -274,8 +278,11 @@ Direct script usage remains available if you want the lower-level helper:
 
 ```bash
 ./scripts/demo-request.sh "Explain what this proxy does in one paragraph."
+./scripts/demo-request.sh --json "Return whether the demo is reachable."
 printf 'Summarize this request.\nKeep it to two bullet points.\n' | ./scripts/demo-request.sh
 ```
+
+The `--json` demo path sends the same user prompt with `response_format.type=json_schema` and a minimal schema requiring a string `answer` field. The output shape is controlled by `response_format`; the helper does not rewrite the prompt.
 
 Equivalent raw `curl` request:
 
@@ -284,6 +291,16 @@ curl --silent --show-error --insecure \
   --header 'Content-Type: application/json' \
   --header 'X-API-Key: dev-local-key' \
   --data '{"model":"stories15m","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"Explain what this proxy does in one paragraph."}]}],"response_format":{"type":"text"},"max_output_tokens":512}' \
+  https://localhost:7001/v1/responses
+```
+
+Equivalent raw JSON-schema `curl` request with the same prompt:
+
+```bash
+curl --silent --show-error --insecure \
+  --header 'Content-Type: application/json' \
+  --header 'X-API-Key: dev-local-key' \
+  --data '{"model":"stories15m","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"Explain what this proxy does in one paragraph."}]}],"response_format":{"type":"json_schema","json_schema":{"name":"demo_answer","schema":{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false},"strict":true}},"max_output_tokens":512}' \
   https://localhost:7001/v1/responses
 ```
 
@@ -303,7 +320,7 @@ Run the default self-contained smoke flow:
 make smoke
 ```
 
-`make smoke` starts the managed local stack, waits for the HTTPS API to come up, runs the basic status-only smoke checks, and then stops the stack automatically.
+`make smoke` starts the managed local stack, waits for the HTTPS API to come up, runs the basic smoke checks including a minimal JSON schema output validation, and then stops the stack automatically.
 
 Run the constrained-budget smoke flow:
 
@@ -328,7 +345,7 @@ MAIN_MODEL_PATH=/absolute/path/to/main-model.gguf \
 MAIN_MODEL_ID=main-local-model \
 SUMMARIZER_MODEL_PATH=/absolute/path/to/summarizer-model.gguf \
 SUMMARIZER_MODEL_ID=summarizer-local-model \
-LLAMA_RUNTIME_VERSION=v0.4.0 \
+LLAMA_RUNTIME_VERSION=v0.5.0 \
 LLAMA_RUNTIME_API_KEY=runtime-local-key \
 GEN_PROXY_BASE_URL=https://localhost:7001 \
 MAIN_WORKER_COUNT=4 \
@@ -337,7 +354,7 @@ API_STARTUP_TIMEOUT=60 \
 make stack-run
 ```
 
-Set `LLAMA_RUNTIME_VERSION` only when you intentionally want to override the stack runner default. Releases in this line are validated against `v0.4.0`.
+Set `LLAMA_RUNTIME_VERSION` only when you intentionally want to override the stack runner default. Releases in this line are validated against `v0.5.0`.
 
 Optional smoke overrides:
 

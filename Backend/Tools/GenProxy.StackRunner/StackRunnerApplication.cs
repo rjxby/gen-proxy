@@ -10,7 +10,7 @@ namespace GenProxy.StackRunner;
 
 internal static class StackRunnerDefaults
 {
-    public const string LlamaRuntimeVersion = "v0.4.0";
+    public const string LlamaRuntimeVersion = "v0.5.0";
     public const string LatestReleaseKeyword = "latest";
 }
 

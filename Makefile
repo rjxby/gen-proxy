@@ -12,6 +12,7 @@ DOTNET_PROJECT := Backend/Api/Host/GenProxy.Api.Host.csproj
 STACK_RUNNER_PROJECT := Backend/Tools/GenProxy.StackRunner/GenProxy.StackRunner.csproj
 GEN_PROXY_LAUNCH_PROFILE ?= https
 GEN_PROXY_BASE_URL ?= https://localhost:7001
+DEMO_REQUEST_ARGS ?=
 PUBLIC_API_KEY ?= $(if $(ApiKeys__Keys__0),$(ApiKeys__Keys__0),dev-local-key)
 LLAMA_RUNTIME_OWNER ?= rjxby
 LLAMA_RUNTIME_REPO ?= llama-runtime
@@ -78,13 +79,13 @@ ifeq ($(strip $(PROMPT)),)
 		GEN_PROXY_BASE_URL="$(GEN_PROXY_BASE_URL)" \
 		GEN_PROXY_API_KEY="$(PUBLIC_API_KEY)" \
 		MAIN_MODEL_ID="$(MAIN_MODEL_ID)" \
-		./scripts/demo-request.sh
+		./scripts/demo-request.sh $(DEMO_REQUEST_ARGS)
 else
 	@env \
 		GEN_PROXY_BASE_URL="$(GEN_PROXY_BASE_URL)" \
 		GEN_PROXY_API_KEY="$(PUBLIC_API_KEY)" \
 		MAIN_MODEL_ID="$(MAIN_MODEL_ID)" \
-		./scripts/demo-request.sh "$(PROMPT)"
+		./scripts/demo-request.sh $(DEMO_REQUEST_ARGS) "$(PROMPT)"
 endif
 
 smoke:

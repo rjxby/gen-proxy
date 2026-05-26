@@ -45,13 +45,20 @@ The original roadmap included several early stages that are now implemented. The
   - leading truncation fallback
 - Prompt reduction emits counters tagged by strategy.
 
-### Response normalization and structured JSON object handling
+### Response normalization and structured JSON schema handling
 
 - Plain runtime output is wrapped as an assistant message with `output_text`.
 - Runtime usage is copied into the Responses API usage envelope when available.
-- `response_format.type=json_object` checks runtime capabilities before generation.
-- JSON-object responses must include a runtime trace showing structured output was applied and satisfied.
-- JSON-object responses are parsed and must be valid JSON objects; otherwise the request fails with `502`.
+- Public `response_format.type=json_schema` checks runtime structured JSON output capability before generation.
+- The runtime adapter translates public `json_schema` requests to the `llama-runtime v0.5.0` `json` response format with the raw schema payload.
+- Schema responses must include a runtime trace showing structured output was applied and satisfied.
+- Schema responses are parsed and must be valid JSON objects; otherwise the request fails with `502`.
+
+### Local stack and smoke coverage
+
+- The local stack runner defaults to `llama-runtime v0.5.0` unless `LLAMA_RUNTIME_VERSION` is set explicitly.
+- `make smoke` runs basic generation, auth, invalid-request, and minimal JSON schema output checks.
+- `make smoke-budget` keeps the constrained oversized-prompt `422` check.
 
 ### Security, limits, logging, and OpenAPI
 
@@ -131,7 +138,7 @@ Capability fields to cache:
 - model id
 - context size
 - supports structured output
-- supports JSON object output
+- supports JSON output
 - supports speculative decoding
 - tokenizer family
 - streaming support when the runtime exposes it
@@ -165,8 +172,7 @@ Pick a runtime/model deterministically and explainably.
 Hard filters:
 
 - unavailable runtime is excluded
-- `json_object` requires JSON-object capability
-- future `json_schema` requests require schema-capable runtime
+- `json_schema` requires structured JSON output capability
 - future `stream=true` requests require streaming-capable runtime
 - context overflow requires reduction or failure
 
@@ -247,7 +253,7 @@ Support richer canonical inputs without changing the public boundary later.
 
 - Request mapper for multi-turn `system`, `developer`, `user`, and `assistant` messages.
 - Stable prompt serialization with turn labels.
-- Support for tool definitions as data once tool-call parsing is added.
+- Support for request-local tool definitions as canonical data.
 - Support for structured-output schema metadata once schema output is added.
 - Tests proving token estimation and generation receive the same normalized prompt.
 
@@ -274,21 +280,84 @@ Normalize runtime output into one stable response shape regardless of runtime de
 - Plain text assistant messages.
 - Runtime trace attachment when exposed publicly.
 - Structured output validation beyond JSON object.
-- Future tool-call parsing.
+- Tool-call output parsing once tool-call transport is enabled.
 - Canonical error mapping for runtime and validation failures.
 
 ### Verify at end
 
 - Plain text response normalizes correctly.
 - JSON object response validates correctly.
-- Future tool-call output becomes canonical `tool_call`.
+- Tool-call output becomes canonical `tool_call` once tool-call transport is enabled.
 - Runtime errors become canonical errors.
 
 ### Done means
 
 Scrullud receives one stable response shape while runtime-specific details stay behind the adapter.
 
-## Step 7 - Improve reduction trace and orchestration
+## Step 7 - Add tool-call transport without execution
+
+### Goal
+
+Support the standard Responses API `tools` and `tool_choice` contract while keeping tool execution and the tool loop outside Gen Proxy.
+
+Gen Proxy must validate, translate, route, and normalize tool-call traffic. It must not execute tools, call tools on behalf of the client, own conversation state, or perform an automatic second model call after a tool call.
+
+### What to implement
+
+Phase 1 - Request-local tool declarations:
+
+- Replace raw `tools` and `tool_choice` rejection with typed request models.
+- Accept standard function tool definitions with `type`, `name`, `description`, and JSON-object `parameters`.
+- Require full tool schemas in the request for custom tools.
+- Reject bare tool names unless a future configured tool catalog supplies the missing schema.
+- Support a conservative first `tool_choice` set such as `auto`, `none`, and named function choice.
+- Add request validation limits for tool count, name length, description length, and parameter schema size.
+
+Phase 2 - Runtime translation:
+
+- Carry tool definitions through the canonical command model.
+- Add a prompt/tool serializer for runtimes without native tool support.
+- Include tool schema tokens in token budgeting and prompt reduction decisions.
+- Keep the public API stable even if the runtime adapter changes from prompt injection to native structured tool passing later.
+
+Phase 3 - Tool-call response normalization:
+
+- Parse model output that represents a tool call.
+- Validate that the requested tool name exists in the request-local tool set.
+- Validate that tool arguments are valid JSON and, when feasible, satisfy the declared parameter schema.
+- Return canonical Responses-style `tool_call` output items.
+- Return normal assistant text when the model does not call a tool.
+- Do not execute tools.
+
+Phase 4 - Client-owned loop continuation:
+
+- Expand canonical input support so clients can send tool results back on the next request.
+- Preserve ordering between prior assistant tool calls and tool result messages/items.
+- Keep Gen Proxy stateless; each request must contain the context needed for the runtime call.
+
+Phase 5 - Runtime-native tools and routing:
+
+- Add runtime/model capability fields for tool-call support.
+- Route tool requests only to runtimes that can support the selected tool-call translation mode.
+- Prefer model profiles with stronger tool-call reliability when several candidates satisfy hard filters.
+- Pass structured tools to `llama-runtime` if a future runtime contract supports native tool definitions.
+
+### Verify at end
+
+- A request with valid `tools` and `tool_choice=auto` is accepted.
+- A malformed tool schema is rejected with field-level validation errors.
+- A prompt-based runtime receives a deterministic tool instruction block.
+- Token estimation includes tool schema overhead.
+- A model-emitted tool call is returned as canonical `tool_call`.
+- Tool arguments are valid JSON before they are returned.
+- Gen Proxy never executes a tool or performs the client-owned tool loop.
+- A follow-up request can include the client-executed tool result.
+
+### Done means
+
+Clients can use the standard Responses API tool contract through Gen Proxy, receive normalized tool-call outputs, execute tools themselves, and send tool results back through the same endpoint.
+
+## Step 8 - Improve reduction trace and orchestration
 
 ### Goal
 
@@ -326,7 +395,7 @@ Reduction trace example:
 
 Token overflow handling is explicit, testable, observable, and compatible with multi-runtime routing.
 
-## Step 8 - Add model profiles
+## Step 9 - Add model profiles
 
 ### Goal
 
@@ -365,7 +434,7 @@ Example:
 
 Model behavior is controlled by profiles and capabilities, not hardcoded branches.
 
-## Step 9 - Add streaming support
+## Step 10 - Add streaming support
 
 ### Goal
 
@@ -398,7 +467,7 @@ Event types:
 
 Streaming is supported without changing ownership boundaries.
 
-## Step 10 - Add telemetry storage
+## Step 11 - Add telemetry storage
 
 ### Goal
 
@@ -433,7 +502,7 @@ You can query:
 
 Proxy behavior can be evaluated from stored data, not just live logs and metrics.
 
-## Step 11 - Add score-based routing
+## Step 12 - Add score-based routing
 
 ### Goal
 
@@ -468,7 +537,7 @@ route_score =
 
 Routing becomes data-informed without becoming opaque.
 
-## Step 12 - Add diagnostics and developer UX
+## Step 13 - Add diagnostics and developer UX
 
 ### Goal
 
@@ -490,6 +559,7 @@ Docs:
 - runtime configuration docs
 - routing docs
 - reduction docs
+- tool-call transport docs
 - model profile docs
 - telemetry docs
 - request and response examples
@@ -519,7 +589,7 @@ Gen Proxy v1 is done when:
 - it routes deterministically across configured runtimes
 - it performs token budgeting across candidates
 - it performs reduction when needed
-- it does not execute tools
+- it transports and normalizes tool calls without executing tools
 - it normalizes runtime responses
 - it emits routing and reduction traces
 - it stores telemetry needed for evaluation

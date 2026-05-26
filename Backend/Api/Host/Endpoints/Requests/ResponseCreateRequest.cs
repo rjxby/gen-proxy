@@ -59,6 +59,20 @@ public class ResponseInputContentPartRequest
 
 public class ResponseFormatRequest
 {
-    [OpenApiStringEnum(RequestedResponseFormats.Text, RequestedResponseFormats.JsonObject)]
+    [OpenApiStringEnum(RequestedResponseFormats.Text, RequestedResponseFormats.JsonSchema)]
     public required string Type { get; set; }
+
+    [JsonPropertyName("json_schema")]
+    public JsonSchemaResponseFormatRequest? JsonSchema { get; set; }
+}
+
+public class JsonSchemaResponseFormatRequest
+{
+    public required string Name { get; set; }
+
+    public string? Description { get; set; }
+
+    public JsonElement? Schema { get; set; }
+
+    public bool? Strict { get; set; }
 }

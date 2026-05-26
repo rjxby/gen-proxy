@@ -104,13 +104,19 @@ public class GrpcLlamaRuntimeClientTests
         var result = await client.GenerateAsync(
             "req_123",
             "prompt",
-            new LlamaGenerationOptions(LlamaResponseFormatType.JsonObject, 123, 0.3f, 0.8f),
+            new LlamaGenerationOptions(
+                LlamaResponseFormatType.JsonSchema,
+                "{\"type\":\"object\"}",
+                123,
+                0.3f,
+                0.8f),
             CancellationToken.None);
 
         transport.LastGenerateRequest.Should().NotBeNull();
         transport.LastGenerateRequest!.RequestId.Should().Be("req_123");
         transport.LastGenerateRequest.Prompt.Should().Be("prompt");
-        transport.LastGenerateRequest.ResponseFormat.Type.Should().Be("json_object");
+        transport.LastGenerateRequest.ResponseFormat.Type.Should().Be("json");
+        transport.LastGenerateRequest.ResponseFormat.JsonSchema.Should().Be("{\"type\":\"object\"}");
         transport.LastGenerateRequest.Generation.MaxOutputTokens.Should().Be(123);
         transport.LastGenerateRequest.Generation.Temperature.Should().Be(0.3f);
         transport.LastGenerateRequest.Generation.TopP.Should().Be(0.8f);
@@ -147,7 +153,7 @@ public class GrpcLlamaRuntimeClientTests
                 ModelId = "runtime-model",
                 ContextSize = 8192,
                 SupportsStructuredOutput = true,
-                SupportsJsonObjectOutput = true,
+                SupportsJsonOutput = true,
                 SupportsSpeculativeDecoding = false,
                 TokenizerFamily = "llama"
             }
@@ -158,7 +164,7 @@ public class GrpcLlamaRuntimeClientTests
         var secondResult = await client.GetCapabilitiesAsync(CancellationToken.None);
 
         firstResult.ModelId.Should().Be("runtime-model");
-        firstResult.SupportsJsonObjectOutput.Should().BeTrue();
+        firstResult.SupportsJsonOutput.Should().BeTrue();
         secondResult.Should().BeEquivalentTo(firstResult);
         transport.GetCapabilitiesCallCount.Should().Be(2);
     }
@@ -189,7 +195,7 @@ public class GrpcLlamaRuntimeClientTests
             ModelId = "runtime-model",
             ContextSize = 8192,
             SupportsStructuredOutput = true,
-            SupportsJsonObjectOutput = true,
+            SupportsJsonOutput = true,
             SupportsSpeculativeDecoding = false,
             TokenizerFamily = "llama"
         });
@@ -198,7 +204,7 @@ public class GrpcLlamaRuntimeClientTests
             ModelId = "runtime-model",
             ContextSize = 8192,
             SupportsStructuredOutput = true,
-            SupportsJsonObjectOutput = true,
+            SupportsJsonOutput = true,
             SupportsSpeculativeDecoding = false,
             TokenizerFamily = "llama"
         });
@@ -220,7 +226,7 @@ public class GrpcLlamaRuntimeClientTests
             ModelId = "runtime-model",
             ContextSize = 8192,
             SupportsStructuredOutput = true,
-            SupportsJsonObjectOutput = true,
+            SupportsJsonOutput = true,
             SupportsSpeculativeDecoding = false,
             TokenizerFamily = "llama"
         }));
@@ -324,6 +330,42 @@ public class GrpcLlamaRuntimeClientTests
 
         var exception = await act.Should().ThrowAsync<GenProxy.Api.Integrations.Contracts.LlamaRuntimeUnsupportedGenerationOverridesException>();
         exception.Which.Message.Should().Contain("Request-level generation overrides are not supported");
+        exception.Which.InnerException.Should().BeOfType<RpcException>();
+    }
+
+    [Fact]
+    public async Task GenerateAsync_WhenRuntimeReportsInvalidArgument_ThrowsLlamaRuntimeInvalidArgumentException()
+    {
+        var trailers = new Metadata
+        {
+            { "runtime-error-code", "invalid_argument" }
+        };
+        var transport = new FakeGrpcTransport
+        {
+            GenerateException = new RpcException(new Status(StatusCode.InvalidArgument, "ResponseFormat.JsonSchema must be valid JSON."), trailers)
+        };
+        var client = new GrpcLlamaRuntimeClient(RuntimeName, NullLogger<GrpcLlamaRuntimeClient>.Instance, transport);
+
+        var act = async () => await client.GenerateAsync("req_123", "prompt", null, CancellationToken.None);
+
+        var exception = await act.Should().ThrowAsync<GenProxy.Api.Integrations.Contracts.LlamaRuntimeInvalidArgumentException>();
+        exception.Which.Message.Should().Contain("ResponseFormat.JsonSchema");
+        exception.Which.InnerException.Should().BeOfType<RpcException>();
+    }
+
+    [Fact]
+    public async Task GenerateAsync_WhenRuntimeReportsStructuredOutputFailure_ThrowsLlamaRuntimeStructuredOutputNotSatisfiedException()
+    {
+        var transport = new FakeGrpcTransport
+        {
+            GenerateException = new RpcException(new Status(StatusCode.Internal, "Inference did not return a valid JSON object."))
+        };
+        var client = new GrpcLlamaRuntimeClient(RuntimeName, NullLogger<GrpcLlamaRuntimeClient>.Instance, transport);
+
+        var act = async () => await client.GenerateAsync("req_123", "prompt", null, CancellationToken.None);
+
+        var exception = await act.Should().ThrowAsync<GenProxy.Api.Integrations.Contracts.LlamaRuntimeStructuredOutputNotSatisfiedException>();
+        exception.Which.Message.Should().Be("Inference did not return a valid JSON object.");
         exception.Which.InnerException.Should().BeOfType<RpcException>();
     }
 

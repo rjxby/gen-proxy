@@ -12,6 +12,8 @@ namespace GenProxy.Api.UnitTests;
 
 public class ResponseGenerationServiceTests
 {
+    private const string JsonSchema = "{\"type\":\"object\",\"properties\":{\"ok\":{\"type\":\"boolean\"}},\"required\":[\"ok\"],\"additionalProperties\":false}";
+
     private readonly Mock<IGenerationRuntimeClient> _generationRuntimeClient;
     private readonly Mock<IPromptReductionPipeline> _promptReductionPipeline;
     private readonly ResponseGenerationService _service;
@@ -29,7 +31,7 @@ public class ResponseGenerationServiceTests
     [Fact]
     public async Task GenerateAsync_WhenPromptFits_GeneratesWithoutReduction()
     {
-        var command = new ResponseCreateCommand("stories15m", "hello", 128, 0.4f, 0.9f, null, null);
+        var command = new ResponseCreateCommand("stories15m", "hello", 128, 0.4f, 0.9f, null, null, null);
         _generationRuntimeClient
             .Setup(client => client.EstimateTokensAsync(command.Input, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new TokenEstimation(5, 4096, 256, 3840, true));
@@ -72,7 +74,7 @@ public class ResponseGenerationServiceTests
     [Fact]
     public async Task GenerateAsync_WhenPromptDoesNotFit_ReducesThenGenerates()
     {
-        var command = new ResponseCreateCommand("stories15m", "very long prompt", 128, null, null, null, null);
+        var command = new ResponseCreateCommand("stories15m", "very long prompt", 128, null, null, null, null, null);
         _generationRuntimeClient
             .SetupSequence(client => client.EstimateTokensAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new TokenEstimation(9000, 8192, 512, 7680, false))
@@ -106,7 +108,7 @@ public class ResponseGenerationServiceTests
     [Fact]
     public async Task GenerateAsync_WhenPromptStillDoesNotFit_ThrowsPromptBudgetExceededException()
     {
-        var command = new ResponseCreateCommand("stories15m", "too long", null, null, null, null, null);
+        var command = new ResponseCreateCommand("stories15m", "too long", null, null, null, null, null, null);
         _generationRuntimeClient
             .SetupSequence(client => client.EstimateTokensAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new TokenEstimation(9000, 8192, 512, 7680, false))
@@ -121,9 +123,9 @@ public class ResponseGenerationServiceTests
     }
 
     [Fact]
-    public async Task GenerateAsync_WhenJsonObjectRequestedAndRuntimeDoesNotSupportIt_ThrowsResponseFormatNotSupportedException()
+    public async Task GenerateAsync_WhenJsonSchemaRequestedAndRuntimeDoesNotSupportIt_ThrowsResponseFormatNotSupportedException()
     {
-        var command = new ResponseCreateCommand("stories15m", "{}", 128, null, null, null, RequestedResponseFormat.JsonObject);
+        var command = new ResponseCreateCommand("stories15m", "{}", 128, null, null, null, RequestedResponseFormat.JsonSchema, JsonSchema);
         _generationRuntimeClient
             .Setup(client => client.GetCapabilitiesAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync(new LlamaCapabilities("runtime-model", 8192, true, false, false, "llama"));
@@ -137,9 +139,25 @@ public class ResponseGenerationServiceTests
     }
 
     [Fact]
-    public async Task GenerateAsync_WhenJsonObjectRequestedAndRuntimeTraceRejectsIt_ThrowsStructuredOutputNotSatisfiedException()
+    public async Task GenerateAsync_WhenJsonSchemaRequestedAndRuntimeDoesNotSupportStructuredOutput_ThrowsResponseFormatNotSupportedException()
     {
-        var command = new ResponseCreateCommand("stories15m", "{}", 128, null, null, null, RequestedResponseFormat.JsonObject);
+        var command = new ResponseCreateCommand("stories15m", "{}", 128, null, null, null, RequestedResponseFormat.JsonSchema, JsonSchema);
+        _generationRuntimeClient
+            .Setup(client => client.GetCapabilitiesAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new LlamaCapabilities("runtime-model", 8192, false, true, false, "llama"));
+
+        var act = async () => await _service.GenerateAsync(command, CancellationToken.None);
+
+        await act.Should().ThrowAsync<ResponseFormatNotSupportedException>();
+        _generationRuntimeClient.Verify(
+            client => client.EstimateTokensAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task GenerateAsync_WhenJsonSchemaRequestedAndRuntimeTraceRejectsIt_ThrowsStructuredOutputNotSatisfiedException()
+    {
+        var command = new ResponseCreateCommand("stories15m", "{}", 128, null, null, null, RequestedResponseFormat.JsonSchema, JsonSchema);
         _generationRuntimeClient
             .Setup(client => client.GetCapabilitiesAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync(new LlamaCapabilities("runtime-model", 8192, true, true, false, "llama"));
@@ -151,7 +169,8 @@ public class ResponseGenerationServiceTests
                 It.IsAny<string>(),
                 command.Input,
                 It.Is<LlamaGenerationOptions?>(options =>
-                    options!.ResponseFormat == LlamaResponseFormatType.JsonObject &&
+                    options!.ResponseFormat == LlamaResponseFormatType.JsonSchema &&
+                    options.JsonSchema == JsonSchema &&
                     options.MaxOutputTokens == 128),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(new LlamaGenerationResult(
@@ -167,9 +186,9 @@ public class ResponseGenerationServiceTests
     }
 
     [Fact]
-    public async Task GenerateAsync_WhenJsonObjectRequestedAndRuntimeTraceIsMissing_ThrowsStructuredOutputNotSatisfiedException()
+    public async Task GenerateAsync_WhenJsonSchemaRequestedAndRuntimeTraceIsMissing_ThrowsStructuredOutputNotSatisfiedException()
     {
-        var command = new ResponseCreateCommand("stories15m", "{}", 128, null, null, null, RequestedResponseFormat.JsonObject);
+        var command = new ResponseCreateCommand("stories15m", "{}", 128, null, null, null, RequestedResponseFormat.JsonSchema, JsonSchema);
         _generationRuntimeClient
             .Setup(client => client.GetCapabilitiesAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync(new LlamaCapabilities("runtime-model", 8192, true, true, false, "llama"));
@@ -195,9 +214,9 @@ public class ResponseGenerationServiceTests
     }
 
     [Fact]
-    public async Task GenerateAsync_WhenJsonObjectRequestedAndStructuredOutputWasNotApplied_ThrowsStructuredOutputNotSatisfiedException()
+    public async Task GenerateAsync_WhenJsonSchemaRequestedAndStructuredOutputWasNotApplied_ThrowsStructuredOutputNotSatisfiedException()
     {
-        var command = new ResponseCreateCommand("stories15m", "{}", 128, null, null, null, RequestedResponseFormat.JsonObject);
+        var command = new ResponseCreateCommand("stories15m", "{}", 128, null, null, null, RequestedResponseFormat.JsonSchema, JsonSchema);
         _generationRuntimeClient
             .Setup(client => client.GetCapabilitiesAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync(new LlamaCapabilities("runtime-model", 8192, true, true, false, "llama"));
@@ -223,9 +242,9 @@ public class ResponseGenerationServiceTests
     }
 
     [Fact]
-    public async Task GenerateAsync_WhenJsonObjectRequestedAndContentIsNotValidJson_ThrowsStructuredOutputNotSatisfiedException()
+    public async Task GenerateAsync_WhenJsonSchemaRequestedAndContentIsNotValidJson_ThrowsStructuredOutputNotSatisfiedException()
     {
-        var command = new ResponseCreateCommand("stories15m", "{}", 128, null, null, null, RequestedResponseFormat.JsonObject);
+        var command = new ResponseCreateCommand("stories15m", "{}", 128, null, null, null, RequestedResponseFormat.JsonSchema, JsonSchema);
         _generationRuntimeClient
             .Setup(client => client.GetCapabilitiesAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync(new LlamaCapabilities("runtime-model", 8192, true, true, false, "llama"));
@@ -251,9 +270,9 @@ public class ResponseGenerationServiceTests
     }
 
     [Fact]
-    public async Task GenerateAsync_WhenJsonObjectRequestedAndContentIsNotAnObject_ThrowsStructuredOutputNotSatisfiedException()
+    public async Task GenerateAsync_WhenJsonSchemaRequestedAndContentIsNotAnObject_ThrowsStructuredOutputNotSatisfiedException()
     {
-        var command = new ResponseCreateCommand("stories15m", "{}", 128, null, null, null, RequestedResponseFormat.JsonObject);
+        var command = new ResponseCreateCommand("stories15m", "{}", 128, null, null, null, RequestedResponseFormat.JsonSchema, JsonSchema);
         _generationRuntimeClient
             .Setup(client => client.GetCapabilitiesAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync(new LlamaCapabilities("runtime-model", 8192, true, true, false, "llama"));

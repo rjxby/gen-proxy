@@ -16,7 +16,7 @@ It validates Responses-style requests, normalizes input into a runtime prompt, e
 - `POST /v1/responses` accepts a Responses-compatible request body.
 - Validation enforces the current API boundary: a required `model`, exactly one structured user message, one or more `input_text` content parts, supported response formats, request limits, and rejected unsupported fields.
 - `ResponseCreateRequestMapper` normalizes valid input text parts into a deterministic prompt.
-- `ResponseGenerationService` creates a response id, records request metrics, checks required runtime capabilities for JSON-object output, and estimates token usage before generation.
+- `ResponseGenerationService` creates a response id, records request metrics, checks required runtime capabilities for JSON schema output, and estimates token usage before generation.
 - The generation runtime is called through `IGenerationRuntimeClient`.
 - The runtime response is wrapped into the public Responses-style shape by `ResponsesFactory`.
 
@@ -36,8 +36,8 @@ It validates Responses-style requests, normalizes input into a runtime prompt, e
 - Gen Proxy may use a second prompt-reducer runtime for prompt summarization.
 - Runtime addresses are configured with `GenerationRuntime:*` and `PromptReducerRuntime:*` options and must use HTTPS when enabled.
 - The gRPC client supports `EstimateTokens`, `GetCapabilities`, and `Generate`.
-- `response_format.type=json_object` requires generation runtime capability support before generation.
-- JSON-object responses must include runtime trace metadata showing structured output was applied and satisfied, and the generated content must parse as a JSON object.
+- `response_format.type=json_schema` requires generation runtime structured JSON output capability support before generation and is translated to the `llama-runtime v0.5.0` `json` response format with the raw schema payload.
+- Schema responses must include runtime trace metadata showing structured output was applied and satisfied, and the generated content must parse as a JSON object.
 - Request-level generation options are forwarded to the runtime; support for `temperature`, `top_p`, and `max_output_tokens` is runtime-defined.
 
 ## Security, observability, and failures
@@ -55,5 +55,5 @@ It validates Responses-style requests, normalizes input into a runtime prompt, e
 
 - `make stack-run` starts compatible generation and summarizer runtimes, waits for readiness, then starts the API.
 - The stack runner downloads and caches `llama-runtime` release artifacts, writes runtime logs, tracks process ids, and cleans up managed processes on exit.
-- The local stack workflow defaults to `llama-runtime v0.4.0` unless `LLAMA_RUNTIME_VERSION` is set explicitly.
+- The local stack workflow defaults to `llama-runtime v0.5.0` unless `LLAMA_RUNTIME_VERSION` is set explicitly.
 - `make smoke` and `make smoke-budget` use the same stack runner for repeatable local verification.

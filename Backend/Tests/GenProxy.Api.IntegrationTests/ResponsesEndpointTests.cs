@@ -103,7 +103,10 @@ public class ResponsesEndpointTests
             .AsArray()
             .Select(value => value!.GetValue<string>())
             .Should()
-            .Equal("text", "json_object");
+            .Equal("text", "json_schema");
+
+        var jsonSchemaSchema = ResolveSchema(document!, responseFormatSchema["properties"]!["json_schema"]);
+        jsonSchemaSchema["properties"]!["schema"].Should().NotBeNull();
 
         var inputSchema = requestSchema["properties"]!["input"];
         inputSchema.Should().NotBeNull();
@@ -239,7 +242,7 @@ public class ResponsesEndpointTests
     }
 
     [Fact]
-    public async Task PostResponses_WithJsonObjectResponseFormatAndSupportedRuntime_ReturnsResponse()
+    public async Task PostResponses_WithJsonSchemaResponseFormatAndSupportedRuntime_ReturnsResponse()
     {
         await using var factory = CreateFactory(
             new FakeGenerationRuntimeClient(),
@@ -252,10 +255,7 @@ public class ResponsesEndpointTests
         {
             model = "stories15m",
             input = StructuredInput("return valid json"),
-            response_format = new
-            {
-                type = "json_object"
-            },
+            response_format = JsonSchemaResponseFormat(),
             max_output_tokens = 64
         });
 
@@ -333,6 +333,32 @@ public class ResponsesEndpointTests
             response_format = new
             {
                 type = "xml"
+            }
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var problem = await response.Content.ReadFromJsonAsync<ValidationProblemDetails>();
+        problem.Should().NotBeNull();
+        problem!.Errors.Should().ContainKey("response_format.type");
+    }
+
+    [Fact]
+    public async Task PostResponses_WhenResponseFormatTypeIsLegacyJsonObject_ReturnsValidationProblem()
+    {
+        await using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(),
+            new FakePromptReducerRuntimeClient());
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = StructuredInput("hello world"),
+            response_format = new
+            {
+                type = "json_object"
             }
         });
 
@@ -546,10 +572,10 @@ public class ResponsesEndpointTests
     }
 
     [Fact]
-    public async Task PostResponses_WhenJsonObjectResponseFormatIsUnsupported_ReturnsBadRequest()
+    public async Task PostResponses_WhenJsonSchemaResponseFormatIsUnsupported_ReturnsBadRequest()
     {
         await using var factory = CreateFactory(
-            new FakeGenerationRuntimeClient(supportsJsonObjectOutput: false),
+            new FakeGenerationRuntimeClient(supportsJsonOutput: false),
             new FakePromptReducerRuntimeClient());
 
         var client = factory.CreateClient();
@@ -559,10 +585,7 @@ public class ResponsesEndpointTests
         {
             model = "stories15m",
             input = StructuredInput("hello world"),
-            response_format = new
-            {
-                type = "json_object"
-            }
+            response_format = JsonSchemaResponseFormat()
         });
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
@@ -572,10 +595,34 @@ public class ResponsesEndpointTests
     }
 
     [Fact]
+    public async Task PostResponses_WhenStructuredOutputIsUnsupported_ReturnsBadRequest()
+    {
+        await using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(supportsStructuredOutput: false),
+            new FakePromptReducerRuntimeClient());
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = StructuredInput("hello world"),
+            response_format = JsonSchemaResponseFormat()
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+        problem.Should().NotBeNull();
+        problem!.Title.Should().Be("Unsupported response format.");
+    }
+
+
+    [Fact]
     public async Task PostResponses_WhenStructuredOutputRequirementIsNotSatisfied_ReturnsBadGateway()
     {
         await using var factory = CreateFactory(
-            new FakeGenerationRuntimeClient(jsonObjectStructuredOutputSatisfied: false),
+            new FakeGenerationRuntimeClient(jsonSchemaStructuredOutputSatisfied: false),
             new FakePromptReducerRuntimeClient());
 
         var client = factory.CreateClient();
@@ -585,10 +632,7 @@ public class ResponsesEndpointTests
         {
             model = "stories15m",
             input = StructuredInput("hello world"),
-            response_format = new
-            {
-                type = "json_object"
-            }
+            response_format = JsonSchemaResponseFormat()
         });
 
         response.StatusCode.Should().Be(HttpStatusCode.BadGateway);
@@ -598,10 +642,10 @@ public class ResponsesEndpointTests
     }
 
     [Fact]
-    public async Task PostResponses_WhenJsonObjectRuntimeTraceIsMissing_ReturnsBadGateway()
+    public async Task PostResponses_WhenJsonSchemaRuntimeTraceIsMissing_ReturnsBadGateway()
     {
         await using var factory = CreateFactory(
-            new FakeGenerationRuntimeClient(includeJsonObjectRuntimeTrace: false),
+            new FakeGenerationRuntimeClient(includeJsonSchemaRuntimeTrace: false),
             new FakePromptReducerRuntimeClient());
 
         var client = factory.CreateClient();
@@ -611,10 +655,7 @@ public class ResponsesEndpointTests
         {
             model = "stories15m",
             input = StructuredInput("hello world"),
-            response_format = new
-            {
-                type = "json_object"
-            }
+            response_format = JsonSchemaResponseFormat()
         });
 
         response.StatusCode.Should().Be(HttpStatusCode.BadGateway);
@@ -624,10 +665,10 @@ public class ResponsesEndpointTests
     }
 
     [Fact]
-    public async Task PostResponses_WhenJsonObjectStructuredOutputWasNotApplied_ReturnsBadGateway()
+    public async Task PostResponses_WhenJsonSchemaStructuredOutputWasNotApplied_ReturnsBadGateway()
     {
         await using var factory = CreateFactory(
-            new FakeGenerationRuntimeClient(jsonObjectStructuredOutputApplied: false),
+            new FakeGenerationRuntimeClient(jsonSchemaStructuredOutputApplied: false),
             new FakePromptReducerRuntimeClient());
 
         var client = factory.CreateClient();
@@ -637,10 +678,7 @@ public class ResponsesEndpointTests
         {
             model = "stories15m",
             input = StructuredInput("hello world"),
-            response_format = new
-            {
-                type = "json_object"
-            }
+            response_format = JsonSchemaResponseFormat()
         });
 
         response.StatusCode.Should().Be(HttpStatusCode.BadGateway);
@@ -650,10 +688,10 @@ public class ResponsesEndpointTests
     }
 
     [Fact]
-    public async Task PostResponses_WhenJsonObjectOutputIsNotValidJson_ReturnsBadGateway()
+    public async Task PostResponses_WhenJsonSchemaOutputIsNotValidJson_ReturnsBadGateway()
     {
         await using var factory = CreateFactory(
-            new FakeGenerationRuntimeClient(jsonObjectContent: "not-json"),
+            new FakeGenerationRuntimeClient(jsonSchemaContent: "not-json"),
             new FakePromptReducerRuntimeClient());
 
         var client = factory.CreateClient();
@@ -663,10 +701,7 @@ public class ResponsesEndpointTests
         {
             model = "stories15m",
             input = StructuredInput("hello world"),
-            response_format = new
-            {
-                type = "json_object"
-            }
+            response_format = JsonSchemaResponseFormat()
         });
 
         response.StatusCode.Should().Be(HttpStatusCode.BadGateway);
@@ -676,10 +711,10 @@ public class ResponsesEndpointTests
     }
 
     [Fact]
-    public async Task PostResponses_WhenJsonObjectOutputIsNotAnObject_ReturnsBadGateway()
+    public async Task PostResponses_WhenJsonSchemaOutputIsNotAnObject_ReturnsBadGateway()
     {
         await using var factory = CreateFactory(
-            new FakeGenerationRuntimeClient(jsonObjectContent: "[1,2,3]"),
+            new FakeGenerationRuntimeClient(jsonSchemaContent: "[1,2,3]"),
             new FakePromptReducerRuntimeClient());
 
         var client = factory.CreateClient();
@@ -689,16 +724,38 @@ public class ResponsesEndpointTests
         {
             model = "stories15m",
             input = StructuredInput("hello world"),
-            response_format = new
-            {
-                type = "json_object"
-            }
+            response_format = JsonSchemaResponseFormat()
         });
 
         response.StatusCode.Should().Be(HttpStatusCode.BadGateway);
         var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
         problem.Should().NotBeNull();
         problem!.Title.Should().Be("Structured output requirement not satisfied.");
+    }
+
+    [Fact]
+    public async Task PostResponses_WhenRuntimeRejectsJsonSchemaOutput_ReturnsBadGateway()
+    {
+        await using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(
+                generateException: new LlamaRuntimeStructuredOutputNotSatisfiedException("Inference did not return a valid JSON object.")),
+            new FakePromptReducerRuntimeClient());
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = StructuredInput("hello world"),
+            response_format = JsonSchemaResponseFormat()
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadGateway);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+        problem.Should().NotBeNull();
+        problem!.Title.Should().Be("Structured output requirement not satisfied.");
+        problem.Detail.Should().Be("Inference did not return a valid JSON object.");
     }
 
     [Fact]
@@ -1106,6 +1163,47 @@ public class ResponsesEndpointTests
     }
 
     [Fact]
+    public async Task PostResponses_WhenExceptionHandled_EmitsCombinedHttpLogWithFinalStatusCode()
+    {
+        var sink = new LogSink();
+
+        await using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(
+                generateException: new LlamaRuntimeStructuredOutputNotSatisfiedException("Inference did not return a valid JSON object.")),
+            new FakePromptReducerRuntimeClient(),
+            configureLogging: logging =>
+            {
+                logging.ClearProviders();
+                logging.AddProvider(new SinkLoggerProvider(sink));
+                logging.SetMinimumLevel(LogLevel.Information);
+            },
+            configureSettings: settings =>
+            {
+                settings["Logging:LogLevel:Default"] = "Information";
+                settings["Logging:LogLevel:Microsoft.AspNetCore"] = "Warning";
+                settings["Logging:LogLevel:Microsoft.AspNetCore.HttpLogging.HttpLoggingMiddleware"] = "Information";
+            });
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = StructuredInput("hello world"),
+            response_format = JsonSchemaResponseFormat()
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadGateway);
+
+        var httpLogMessage = GetSingleHttpLogMessage(sink);
+        httpLogMessage.Should().Contain("POST");
+        httpLogMessage.Should().Contain("/v1/responses");
+        httpLogMessage.Should().Contain("502");
+        httpLogMessage.Should().NotContain("StatusCode: 200");
+    }
+
+    [Fact]
     public async Task PostResponses_WhenBodyLoggingEnabled_EmitsCombinedHttpLogWithBodies()
     {
         var sink = new LogSink();
@@ -1201,6 +1299,29 @@ public class ResponsesEndpointTests
         ];
     }
 
+    private static object JsonSchemaResponseFormat()
+    {
+        return new
+        {
+            type = "json_schema",
+            json_schema = new
+            {
+                name = "result",
+                schema = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        result = new { type = "string" }
+                    },
+                    required = new[] { "result" },
+                    additionalProperties = false
+                },
+                strict = true
+            }
+        };
+    }
+
     private static WebApplicationFactory<Program> CreateFactory(
         IGenerationRuntimeClient generationRuntimeClient,
         IPromptReducerRuntimeClient? promptReducerRuntimeClient,
@@ -1282,21 +1403,25 @@ public class ResponsesEndpointTests
         bool fitsAfterReduction = true,
         string truncatedPrompt = "__none__",
         string oversizedPrompt = "__oversized__",
-        bool supportsJsonObjectOutput = true,
-        bool includeJsonObjectRuntimeTrace = true,
-        bool jsonObjectStructuredOutputApplied = true,
-        bool jsonObjectStructuredOutputSatisfied = true,
-        string? jsonObjectContent = null,
-        string runtimeModel = "runtime-model") : IGenerationRuntimeClient
+        bool supportsStructuredOutput = true,
+        bool supportsJsonOutput = true,
+        bool includeJsonSchemaRuntimeTrace = true,
+        bool jsonSchemaStructuredOutputApplied = true,
+        bool jsonSchemaStructuredOutputSatisfied = true,
+        string? jsonSchemaContent = null,
+        string runtimeModel = "runtime-model",
+        Exception? generateException = null) : IGenerationRuntimeClient
     {
         private readonly string _truncatedPrompt = truncatedPrompt;
         private readonly string _oversizedPrompt = oversizedPrompt;
-        private readonly bool _supportsJsonObjectOutput = supportsJsonObjectOutput;
-        private readonly bool _includeJsonObjectRuntimeTrace = includeJsonObjectRuntimeTrace;
-        private readonly bool _jsonObjectStructuredOutputApplied = jsonObjectStructuredOutputApplied;
-        private readonly bool _jsonObjectStructuredOutputSatisfied = jsonObjectStructuredOutputSatisfied;
-        private readonly string? _jsonObjectContent = jsonObjectContent;
+        private readonly bool _supportsStructuredOutput = supportsStructuredOutput;
+        private readonly bool _supportsJsonOutput = supportsJsonOutput;
+        private readonly bool _includeJsonSchemaRuntimeTrace = includeJsonSchemaRuntimeTrace;
+        private readonly bool _jsonSchemaStructuredOutputApplied = jsonSchemaStructuredOutputApplied;
+        private readonly bool _jsonSchemaStructuredOutputSatisfied = jsonSchemaStructuredOutputSatisfied;
+        private readonly string? _jsonSchemaContent = jsonSchemaContent;
         private readonly string _runtimeModel = runtimeModel;
+        private readonly Exception? _generateException = generateException;
 
         public string? LastPrompt { get; private set; }
 
@@ -1322,8 +1447,8 @@ public class ResponsesEndpointTests
             return Task.FromResult(new LlamaCapabilities(
                 _runtimeModel,
                 8192,
-                SupportsStructuredOutput: true,
-                SupportsJsonObjectOutput: _supportsJsonObjectOutput,
+                SupportsStructuredOutput: _supportsStructuredOutput,
+                SupportsJsonOutput: _supportsJsonOutput,
                 SupportsSpeculativeDecoding: false,
                 TokenizerFamily: "llama"));
         }
@@ -1334,10 +1459,15 @@ public class ResponsesEndpointTests
             LlamaGenerationOptions? options,
             CancellationToken cancellationToken)
         {
+            if (_generateException is not null)
+            {
+                throw _generateException;
+            }
+
             LastPrompt = prompt;
             LastGenerationOptions = options;
-            var content = options?.ResponseFormat == LlamaResponseFormatType.JsonObject
-                ? _jsonObjectContent ?? $"{{\"result\":\"{prompt}\"}}"
+            var content = options?.ResponseFormat == LlamaResponseFormatType.JsonSchema
+                ? _jsonSchemaContent ?? $"{{\"result\":\"{prompt}\"}}"
                 : $"generated: {prompt}";
 
             return Task.FromResult(new LlamaGenerationResult(
@@ -1345,11 +1475,11 @@ public class ResponsesEndpointTests
                 _runtimeModel,
                 content,
                 new LlamaUsage(42, 7, 49),
-                options?.ResponseFormat == LlamaResponseFormatType.JsonObject
-                    ? _includeJsonObjectRuntimeTrace
+                options?.ResponseFormat == LlamaResponseFormatType.JsonSchema
+                    ? _includeJsonSchemaRuntimeTrace
                         ? new LlamaRuntimeTrace(
-                            _jsonObjectStructuredOutputApplied,
-                            _jsonObjectStructuredOutputSatisfied,
+                            _jsonSchemaStructuredOutputApplied,
+                            _jsonSchemaStructuredOutputSatisfied,
                             false)
                         : null
                     : null));

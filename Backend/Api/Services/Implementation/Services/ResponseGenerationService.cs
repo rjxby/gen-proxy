@@ -30,13 +30,13 @@ public class ResponseGenerationService(
         {
             _logger.LogInformation("Starting response generation. RequestId={RequestId} Model={Model}", requestId, command.Model);
 
-            if (responseFormat == RequestedResponseFormat.JsonObject)
+            if (responseFormat == RequestedResponseFormat.JsonSchema)
             {
                 var capabilities = await _generationRuntimeClient.GetCapabilitiesAsync(cancellationToken);
-                if (!capabilities.SupportsJsonObjectOutput)
+                if (!capabilities.SupportsStructuredOutput || !capabilities.SupportsJsonOutput)
                 {
                     throw new ResponseFormatNotSupportedException(
-                        $"The configured generation runtime does not support response_format.type '{RequestedResponseFormats.GetWireName(RequestedResponseFormat.JsonObject)}'.");
+                        $"The configured generation runtime does not support response_format.type '{RequestedResponseFormats.GetWireName(RequestedResponseFormat.JsonSchema)}'.");
                 }
             }
 
@@ -75,14 +75,15 @@ public class ResponseGenerationService(
                 effectivePrompt,
                 new LlamaGenerationOptions(
                     MapResponseFormat(responseFormat),
+                    command.JsonSchema,
                     command.MaxOutputTokens,
                     command.Temperature,
                     command.TopP),
                 cancellationToken);
 
-            if (responseFormat == RequestedResponseFormat.JsonObject)
+            if (responseFormat == RequestedResponseFormat.JsonSchema)
             {
-                EnsureJsonObjectResponseSatisfied(generation.Content, generation.RuntimeTrace);
+                EnsureStructuredJsonResponseSatisfied(generation.Content, generation.RuntimeTrace);
             }
 
             var response = new GeneratedResponse(
@@ -125,7 +126,7 @@ public class ResponseGenerationService(
         }
     }
 
-    private static void EnsureJsonObjectResponseSatisfied(string content, LlamaRuntimeTrace? runtimeTrace)
+    private static void EnsureStructuredJsonResponseSatisfied(string content, LlamaRuntimeTrace? runtimeTrace)
     {
         if (runtimeTrace is not { StructuredOutputApplied: true, StructuredOutputSatisfied: true })
         {
@@ -154,7 +155,7 @@ public class ResponseGenerationService(
         return responseFormat switch
         {
             RequestedResponseFormat.Text => LlamaResponseFormatType.Text,
-            RequestedResponseFormat.JsonObject => LlamaResponseFormatType.JsonObject,
+            RequestedResponseFormat.JsonSchema => LlamaResponseFormatType.JsonSchema,
             null => null,
             _ => null
         };

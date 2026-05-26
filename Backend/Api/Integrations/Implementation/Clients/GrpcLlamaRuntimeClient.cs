@@ -11,6 +11,8 @@ public sealed class GrpcLlamaRuntimeClient : ILlamaRuntimeClient
 {
     private const string PromptBudgetExceededMarker = "Prompt exceeds input budget";
     private const string RuntimeErrorCodeTrailerName = "runtime-error-code";
+    private const string StructuredOutputNotSatisfiedDetail = "Inference did not return a valid JSON object.";
+    private const string InvalidArgumentCode = "invalid_argument";
     private const string UnsupportedGenerationOverridesCode = "unsupported_generation_overrides";
     private readonly IGrpcLlamaTransport _transport;
     private readonly string _runtimeName;
@@ -97,15 +99,16 @@ public sealed class GrpcLlamaRuntimeClient : ILlamaRuntimeClient
                 reply.ModelId,
                 reply.ContextSize,
                 reply.SupportsStructuredOutput,
-                reply.SupportsJsonObjectOutput,
+                reply.SupportsJsonOutput,
                 reply.SupportsSpeculativeDecoding,
                 reply.TokenizerFamily);
 
             _logger.LogInformation(
-                "Upstream capability fetch completed. Runtime={Runtime} ModelId={ModelId} JsonObjectOutput={SupportsJsonObjectOutput} DurationMs={DurationMs}",
+                "Upstream capability fetch completed. Runtime={Runtime} ModelId={ModelId} StructuredOutput={SupportsStructuredOutput} JsonOutput={SupportsJsonOutput} DurationMs={DurationMs}",
                 _runtimeName,
                 capabilities.ModelId,
-                capabilities.SupportsJsonObjectOutput,
+                capabilities.SupportsStructuredOutput,
+                capabilities.SupportsJsonOutput,
                 stopwatch.Elapsed.TotalMilliseconds);
 
             return capabilities;
@@ -157,10 +160,16 @@ public sealed class GrpcLlamaRuntimeClient : ILlamaRuntimeClient
                     Type = configuredResponseFormat switch
                     {
                         LlamaResponseFormatType.Text => "text",
-                        LlamaResponseFormatType.JsonObject => "json_object",
+                        LlamaResponseFormatType.JsonSchema => "json",
                         _ => throw new InvalidOperationException($"Unsupported runtime response format '{configuredResponseFormat}'.")
                     }
                 };
+
+                if (configuredResponseFormat == LlamaResponseFormatType.JsonSchema &&
+                    !string.IsNullOrWhiteSpace(options.JsonSchema))
+                {
+                    request.ResponseFormat.JsonSchema = options.JsonSchema;
+                }
             }
 
             if (options?.MaxOutputTokens is not null ||
@@ -230,6 +239,18 @@ public sealed class GrpcLlamaRuntimeClient : ILlamaRuntimeClient
                 throw unsupportedGenerationOverridesException;
             }
 
+            var invalidArgumentException = TryCreateInvalidArgumentException(exception);
+            if (invalidArgumentException is not null)
+            {
+                throw invalidArgumentException;
+            }
+
+            var structuredOutputException = TryCreateStructuredOutputNotSatisfiedException(exception);
+            if (structuredOutputException is not null)
+            {
+                throw structuredOutputException;
+            }
+
             throw CreateUpstreamException("generate", exception);
         }
         catch (HttpRequestException exception)
@@ -282,5 +303,43 @@ public sealed class GrpcLlamaRuntimeClient : ILlamaRuntimeClient
             _runtimeName);
 
         return new LlamaRuntimeUnsupportedGenerationOverridesException(exception.Status.Detail, exception);
+    }
+
+    private LlamaRuntimeInvalidArgumentException? TryCreateInvalidArgumentException(RpcException exception)
+    {
+        if (exception.StatusCode != StatusCode.InvalidArgument)
+        {
+            return null;
+        }
+
+        var errorCode = exception.Trailers
+            .FirstOrDefault(entry => string.Equals(entry.Key, RuntimeErrorCodeTrailerName, StringComparison.Ordinal))
+            ?.Value;
+
+        if (!string.Equals(errorCode, InvalidArgumentCode, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        _logger.LogInformation(
+            "Upstream runtime rejected request argument. Runtime={Runtime}",
+            _runtimeName);
+
+        return new LlamaRuntimeInvalidArgumentException(exception.Status.Detail, exception);
+    }
+
+    private LlamaRuntimeStructuredOutputNotSatisfiedException? TryCreateStructuredOutputNotSatisfiedException(RpcException exception)
+    {
+        if (exception.StatusCode != StatusCode.Internal ||
+            !string.Equals(exception.Status.Detail, StructuredOutputNotSatisfiedDetail, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        _logger.LogInformation(
+            "Upstream runtime did not satisfy structured output. Runtime={Runtime}",
+            _runtimeName);
+
+        return new LlamaRuntimeStructuredOutputNotSatisfiedException(exception.Status.Detail, exception);
     }
 }

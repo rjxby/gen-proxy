@@ -3,11 +3,14 @@ using GenProxy.Api.Host.Endpoints;
 using GenProxy.Api.Services.Contracts.Models;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace GenProxy.Api.Host.Validation;
 
 public sealed class ResponseCreateRequestValidator : AbstractValidator<ResponseCreateRequest>
 {
+    private static readonly Regex JsonSchemaNameRegex = new("^[A-Za-z0-9_-]+$", RegexOptions.Compiled);
+
     public ResponseCreateRequestValidator(IOptions<RequestLimitsOptions> options)
     {
         var limits = options.Value;
@@ -22,12 +25,8 @@ public sealed class ResponseCreateRequestValidator : AbstractValidator<ResponseC
         RuleFor(request => request.Input)
             .Custom((input, context) => ValidateInput(input, limits.MaxInputCharacters, context));
 
-        RuleFor(request => request.ResponseFormat!.Type)
-            .Must(RequestedResponseFormats.IsSupported)
-            .WithMessage(
-                $"Response format type must be one of '{RequestedResponseFormats.Text}' or '{RequestedResponseFormats.JsonObject}'.")
-            .When(request => request.ResponseFormat is not null)
-            .OverridePropertyName("response_format.type");
+        RuleFor(request => request.ResponseFormat)
+            .Custom(ValidateResponseFormat);
 
         RuleFor(request => request.MaxOutputTokens)
             .GreaterThan(0)
@@ -99,6 +98,80 @@ public sealed class ResponseCreateRequestValidator : AbstractValidator<ResponseC
     private static bool HasProvidedJsonValue(JsonElement? value)
     {
         return value is { ValueKind: not JsonValueKind.Null and not JsonValueKind.Undefined };
+    }
+
+    private static void ValidateResponseFormat(
+        ResponseFormatRequest? responseFormat,
+        ValidationContext<ResponseCreateRequest> context)
+    {
+        if (responseFormat is null)
+        {
+            return;
+        }
+
+        if (!RequestedResponseFormats.IsSupported(responseFormat.Type))
+        {
+            context.AddFailure(
+                "response_format.type",
+                $"Response format type must be one of '{RequestedResponseFormats.Text}' or '{RequestedResponseFormats.JsonSchema}'.");
+            return;
+        }
+
+        if (responseFormat.Type == RequestedResponseFormats.Text)
+        {
+            if (responseFormat.JsonSchema is not null)
+            {
+                context.AddFailure(
+                    "response_format.json_schema",
+                    "JSON schema configuration is only valid when response_format.type is 'json_schema'.");
+            }
+
+            return;
+        }
+
+        if (responseFormat.JsonSchema is null)
+        {
+            context.AddFailure(
+                "response_format.json_schema",
+                "JSON schema configuration is required when response_format.type is 'json_schema'.");
+            return;
+        }
+
+        var jsonSchema = responseFormat.JsonSchema;
+        if (string.IsNullOrWhiteSpace(jsonSchema.Name))
+        {
+            context.AddFailure("response_format.json_schema.name", "JSON schema name is required.");
+        }
+        else
+        {
+            if (jsonSchema.Name.Length > 64)
+            {
+                context.AddFailure("response_format.json_schema.name", "JSON schema name must be at most 64 characters.");
+            }
+
+            if (!JsonSchemaNameRegex.IsMatch(jsonSchema.Name))
+            {
+                context.AddFailure(
+                    "response_format.json_schema.name",
+                    "JSON schema name may contain only letters, numbers, underscores, and dashes.");
+            }
+        }
+
+        if (!HasProvidedJsonValue(jsonSchema.Schema))
+        {
+            context.AddFailure("response_format.json_schema.schema", "JSON schema payload is required.");
+        }
+        else if (jsonSchema.Schema is not { ValueKind: JsonValueKind.Object })
+        {
+            context.AddFailure("response_format.json_schema.schema", "JSON schema payload must be an object.");
+        }
+
+        if (jsonSchema.Strict == false)
+        {
+            context.AddFailure(
+                "response_format.json_schema.strict",
+                "Only strict JSON schema response formats are supported.");
+        }
     }
 
     private static void ValidateInput(

@@ -42,13 +42,14 @@ message GetCapabilitiesReply {
   string model_id = 1;
   int32 context_size = 2;
   bool supports_structured_output = 3;
-  bool supports_json_object_output = 4;
+  bool supports_json_output = 4;
   bool supports_speculative_decoding = 5;
   string tokenizer_family = 6;
 }
 
 message ResponseFormat {
   optional string type = 1;
+  optional string json_schema = 2;
 }
 
 message GenerationOptions {

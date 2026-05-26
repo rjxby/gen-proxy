@@ -4,6 +4,6 @@ public record LlamaCapabilities(
     string ModelId,
     int ContextSize,
     bool SupportsStructuredOutput,
-    bool SupportsJsonObjectOutput,
+    bool SupportsJsonOutput,
     bool SupportsSpeculativeDecoding,
     string TokenizerFamily);

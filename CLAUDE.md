@@ -35,7 +35,7 @@ Stateless HTTP orchestration layer for token budgeting, prompt reduction, and re
 - Request and response bodies are not logged by default. Only enable body logging intentionally with `ResponsesLogging:LogBodies=true`.
 - Prompt reducers declare deterministic execution order with `IPromptReducer.Order`; lower values run first.
 - If prompt reduction still does not fit the runtime budget after re-estimation, the request fails with `422`.
-- `response_format.type=json_object` depends on runtime capability discovery and must be validated against runtime trace and parsed JSON object output.
+- `response_format.type=json_schema` depends on runtime capability discovery and must be validated against runtime trace and parsed JSON object output.
 
 ## Change Guidance
 
@@ -46,4 +46,4 @@ Stateless HTTP orchestration layer for token budgeting, prompt reduction, and re
 - Keep prompt and generated-text payloads out of normal structured logs.
 - Add or update xUnit tests for behavior changes.
 - Treat `GenProxy.StackRunner` as local smoke infrastructure, not a replacement for focused unit and integration coverage.
-- The local stack workflow is pinned to `llama-runtime v0.4.0` unless `LLAMA_RUNTIME_VERSION` is set explicitly.
+- The local stack workflow is pinned to `llama-runtime v0.5.0` unless `LLAMA_RUNTIME_VERSION` is set explicitly.

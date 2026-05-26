@@ -99,7 +99,7 @@ public class ExceptionHandlerTests
             .Returns(ValueTask.FromResult(true));
         var handler = new ExceptionHandler(logger, problemDetailsService.Object);
         var httpContext = new DefaultHttpContext();
-        var exception = new GenProxy.Api.Services.Contracts.ResponseFormatNotSupportedException("json_object is unavailable.");
+        var exception = new GenProxy.Api.Services.Contracts.ResponseFormatNotSupportedException("json_schema is unavailable.");
 
         var handled = await handler.TryHandleAsync(httpContext, exception, CancellationToken.None);
 
@@ -107,6 +107,30 @@ public class ExceptionHandlerTests
         httpContext.Response.StatusCode.Should().Be(StatusCodes.Status400BadRequest);
         capturedContext.Should().NotBeNull();
         capturedContext!.ProblemDetails.Title.Should().Be("Unsupported response format.");
+        logger.Entries.Should().ContainSingle();
+        logger.Entries[0].Exception.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task TryHandleAsync_WhenRuntimeArgumentIsInvalid_ReturnsBadRequest()
+    {
+        var logger = new TestLogger<ExceptionHandler>();
+        var problemDetailsService = new Mock<IProblemDetailsService>();
+        ProblemDetailsContext? capturedContext = null;
+        problemDetailsService
+            .Setup(service => service.TryWriteAsync(It.IsAny<ProblemDetailsContext>()))
+            .Callback<ProblemDetailsContext>(context => capturedContext = context)
+            .Returns(ValueTask.FromResult(true));
+        var handler = new ExceptionHandler(logger, problemDetailsService.Object);
+        var httpContext = new DefaultHttpContext();
+        var exception = new LlamaRuntimeInvalidArgumentException("ResponseFormat.JsonSchema must be valid JSON.");
+
+        var handled = await handler.TryHandleAsync(httpContext, exception, CancellationToken.None);
+
+        handled.Should().BeTrue();
+        httpContext.Response.StatusCode.Should().Be(StatusCodes.Status400BadRequest);
+        capturedContext.Should().NotBeNull();
+        capturedContext!.ProblemDetails.Title.Should().Be("Invalid runtime request.");
         logger.Entries.Should().ContainSingle();
         logger.Entries[0].Exception.Should().BeNull();
     }
@@ -131,6 +155,31 @@ public class ExceptionHandlerTests
         httpContext.Response.StatusCode.Should().Be(StatusCodes.Status502BadGateway);
         capturedContext.Should().NotBeNull();
         capturedContext!.ProblemDetails.Title.Should().Be("Structured output requirement not satisfied.");
+        logger.Entries.Should().ContainSingle();
+        logger.Entries[0].Exception.Should().BeSameAs(exception);
+    }
+
+    [Fact]
+    public async Task TryHandleAsync_WhenRuntimeStructuredOutputRequirementIsNotSatisfied_ReturnsBadGateway()
+    {
+        var logger = new TestLogger<ExceptionHandler>();
+        var problemDetailsService = new Mock<IProblemDetailsService>();
+        ProblemDetailsContext? capturedContext = null;
+        problemDetailsService
+            .Setup(service => service.TryWriteAsync(It.IsAny<ProblemDetailsContext>()))
+            .Callback<ProblemDetailsContext>(context => capturedContext = context)
+            .Returns(ValueTask.FromResult(true));
+        var handler = new ExceptionHandler(logger, problemDetailsService.Object);
+        var httpContext = new DefaultHttpContext();
+        var exception = new LlamaRuntimeStructuredOutputNotSatisfiedException("Inference did not return a valid JSON object.");
+
+        var handled = await handler.TryHandleAsync(httpContext, exception, CancellationToken.None);
+
+        handled.Should().BeTrue();
+        httpContext.Response.StatusCode.Should().Be(StatusCodes.Status502BadGateway);
+        capturedContext.Should().NotBeNull();
+        capturedContext!.ProblemDetails.Title.Should().Be("Structured output requirement not satisfied.");
+        capturedContext.ProblemDetails.Detail.Should().Be("Inference did not return a valid JSON object.");
         logger.Entries.Should().ContainSingle();
         logger.Entries[0].Exception.Should().BeSameAs(exception);
     }

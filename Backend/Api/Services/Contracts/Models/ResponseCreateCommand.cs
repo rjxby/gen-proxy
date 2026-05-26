@@ -7,4 +7,5 @@ public record ResponseCreateCommand(
     float? Temperature,
     float? TopP,
     IReadOnlyDictionary<string, string>? Metadata,
-    RequestedResponseFormat? ResponseFormat);
+    RequestedResponseFormat? ResponseFormat,
+    string? JsonSchema);

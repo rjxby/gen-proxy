@@ -13,7 +13,8 @@ public static class ResponseCreateRequestMapper
             request.Temperature,
             request.TopP,
             request.Metadata,
-            MapResponseFormat(request.ResponseFormat?.Type));
+            MapResponseFormat(request.ResponseFormat?.Type),
+            MapJsonSchema(request.ResponseFormat));
     }
 
     private static string BuildPrompt(IReadOnlyList<ResponseInputMessageRequest> input)
@@ -26,9 +27,20 @@ public static class ResponseCreateRequestMapper
         return responseFormatType switch
         {
             RequestedResponseFormats.Text => RequestedResponseFormat.Text,
-            RequestedResponseFormats.JsonObject => RequestedResponseFormat.JsonObject,
+            RequestedResponseFormats.JsonSchema => RequestedResponseFormat.JsonSchema,
             null => null,
             _ => null
         };
+    }
+
+    private static string? MapJsonSchema(ResponseFormatRequest? responseFormat)
+    {
+        if (responseFormat?.Type != RequestedResponseFormats.JsonSchema ||
+            responseFormat.JsonSchema?.Schema is not { } schema)
+        {
+            return null;
+        }
+
+        return schema.GetRawText();
     }
 }

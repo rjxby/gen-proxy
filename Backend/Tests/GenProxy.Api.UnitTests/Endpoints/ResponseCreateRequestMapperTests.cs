@@ -1,6 +1,7 @@
 using FluentAssertions;
 using GenProxy.Api.Host.Endpoints;
 using GenProxy.Api.Services.Contracts.Models;
+using System.Text.Json;
 using Xunit;
 
 namespace GenProxy.Api.UnitTests;
@@ -20,7 +21,7 @@ public class ResponseCreateRequestMapperTests
     }
 
     [Fact]
-    public void Map_WhenResponseFormatProvided_MapsToServiceOwnedEnum()
+    public void Map_WhenJsonSchemaResponseFormatProvided_MapsToServiceOwnedFormatAndSchema()
     {
         var result = ResponseCreateRequestMapper.Map(
             new ResponseCreateRequest
@@ -29,11 +30,27 @@ public class ResponseCreateRequestMapperTests
                 Input = CreateInput("hello"),
                 ResponseFormat = new ResponseFormatRequest
                 {
-                    Type = RequestedResponseFormats.JsonObject
+                    Type = RequestedResponseFormats.JsonSchema,
+                    JsonSchema = new JsonSchemaResponseFormatRequest
+                    {
+                        Name = "result",
+                        Schema = JsonSerializer.SerializeToElement(new
+                        {
+                            type = "object",
+                            properties = new
+                            {
+                                ok = new { type = "boolean" }
+                            },
+                            required = new[] { "ok" },
+                            additionalProperties = false
+                        }),
+                        Strict = true
+                    }
                 }
             });
 
-        result.ResponseFormat.Should().Be(RequestedResponseFormat.JsonObject);
+        result.ResponseFormat.Should().Be(RequestedResponseFormat.JsonSchema);
+        result.JsonSchema.Should().Be("{\"type\":\"object\",\"properties\":{\"ok\":{\"type\":\"boolean\"}},\"required\":[\"ok\"],\"additionalProperties\":false}");
     }
 
     [Fact]

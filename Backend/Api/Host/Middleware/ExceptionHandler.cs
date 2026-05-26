@@ -37,6 +37,11 @@ public sealed class ExceptionHandler(
                 "Structured output requirement not satisfied.",
                 ex.Message,
                 LogLevel.Warning),
+            LlamaRuntimeStructuredOutputNotSatisfiedException ex => (
+                StatusCodes.Status502BadGateway,
+                "Structured output requirement not satisfied.",
+                ex.Message,
+                LogLevel.Warning),
             PromptReductionFailedException ex => (
                 StatusCodes.Status502BadGateway,
                 "Prompt reduction failed.",
@@ -50,6 +55,11 @@ public sealed class ExceptionHandler(
             LlamaRuntimeUnsupportedGenerationOverridesException ex => (
                 StatusCodes.Status400BadRequest,
                 "Unsupported generation overrides.",
+                ex.Message,
+                LogLevel.Information),
+            LlamaRuntimeInvalidArgumentException ex => (
+                StatusCodes.Status400BadRequest,
+                "Invalid runtime request.",
                 ex.Message,
                 LogLevel.Information),
             LlamaRuntimeCallException ex => (
@@ -73,7 +83,7 @@ public sealed class ExceptionHandler(
         {
             _logger.LogError(exception, "Unhandled request failure.");
         }
-        else if (exception is PromptBudgetExceededException or LlamaRuntimePromptBudgetExceededException or LlamaRuntimeUnsupportedGenerationOverridesException or ResponseFormatNotSupportedException)
+        else if (exception is PromptBudgetExceededException or LlamaRuntimePromptBudgetExceededException or LlamaRuntimeUnsupportedGenerationOverridesException or LlamaRuntimeInvalidArgumentException or ResponseFormatNotSupportedException)
         {
             _logger.Log(logLevel, "{Title} {Detail}", title, detail);
         }

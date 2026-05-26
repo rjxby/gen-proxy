@@ -11,8 +11,8 @@ builder.Services.AddPresentationLayer(builder.Configuration);
 
 var app = builder.Build();
 
-app.UseExceptionHandler();
 app.UseHttpLogging();
+app.UseExceptionHandler();
 
 if (app.Environment.IsDevelopment())
 {
