@@ -81,6 +81,26 @@ public class LlmPromptSummarizerTests
     }
 
     [Fact]
+    public async Task ReduceAsync_WhenRuntimeThrowsCallException_ReturnsNoReduction()
+    {
+        var runtimeClient = new Mock<IPromptReducerRuntimeClient>();
+        runtimeClient
+            .Setup(client => client.GenerateAsync(It.IsAny<string>(), It.IsAny<string>(), null, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new LlamaRuntimeCallException("reducer unavailable"));
+
+        var summarizer = new LlmPromptSummarizer(
+            runtimeClient.Object,
+            Options.Create(new PromptReducerRuntimeOptions()),
+            Options.Create(new PromptReductionOptions()));
+
+        var result = await summarizer.ReduceAsync("long prompt", 123, CancellationToken.None);
+
+        result.Prompt.Should().Be("long prompt");
+        result.WasReduced.Should().BeFalse();
+        result.Strategy.Should().Be(PromptReductionStrategy.None);
+    }
+
+    [Fact]
     public async Task ReduceAsync_WhenRuntimeThrowsPromptBudgetExceeded_PropagatesException()
     {
         var runtimeClient = new Mock<IPromptReducerRuntimeClient>();

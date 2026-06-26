@@ -18,7 +18,7 @@ PromptReducerRuntime__Address=https://localhost:50052 \
 
 Defaults for request limits, runtime addresses, and prompt-reduction behavior are compiled into the binary. Outside Development, you still need to supply at least one API key through environment variables or another standard ASP.NET Core configuration source.
 
-Compatibility note: the current local stack workflow is pinned to `llama-runtime v0.5.0`.
+Compatibility note: the current local stack workflow is pinned to `llama-runtime v0.6.0`.
 
 By default, `gen-proxy` does not log request or response bodies in ASP.NET Core HTTP logs. If you set `ResponsesLogging:LogBodies=true`, `gen-proxy` will include request and response bodies in HTTP logs globally.
 
@@ -82,7 +82,7 @@ Current behavior:
 - Top-level string input is not supported.
 - Multi-turn structured input and non-user structured roles are rejected in this stage.
 - `response_format.type` is optional and supports `text` and `json_schema`.
-- `json_schema` requests use the OpenAI-compatible nested `json_schema` object and are sent to `llama-runtime v0.5.0` as runtime response format `json` plus the raw schema payload.
+- `json_schema` requests use the OpenAI-compatible nested `json_schema` object and are sent to `llama-runtime v0.6.0` as runtime response format `json` plus the raw schema payload.
 - `json_schema` requests are rejected with `400` if the configured generation runtime does not advertise structured JSON output support through `GetCapabilities`.
 - `json_schema` requests are rejected with `502` unless the runtime reports that structured output was applied and satisfied, and the returned content is a valid JSON object.
 - The runtime supports a strict JSON Schema subset and remains the source of truth for schema-subset validation.
@@ -225,7 +225,7 @@ make stack-run
 ```
 
 `make stack-run` will:
-- download and use `llama-runtime v0.5.0` by default unless `LLAMA_RUNTIME_VERSION` is set explicitly
+- download and use `llama-runtime v0.6.0` by default unless `LLAMA_RUNTIME_VERSION` is set explicitly
 - cache release artifacts in `.runtime-cache/`
 - write runtime logs to `.runtime-logs/`
 - write PID files and runtime state to `.runtime-run/`
@@ -345,7 +345,7 @@ MAIN_MODEL_PATH=/absolute/path/to/main-model.gguf \
 MAIN_MODEL_ID=main-local-model \
 SUMMARIZER_MODEL_PATH=/absolute/path/to/summarizer-model.gguf \
 SUMMARIZER_MODEL_ID=summarizer-local-model \
-LLAMA_RUNTIME_VERSION=v0.5.0 \
+LLAMA_RUNTIME_VERSION=v0.6.0 \
 LLAMA_RUNTIME_API_KEY=runtime-local-key \
 GEN_PROXY_BASE_URL=https://localhost:7001 \
 MAIN_WORKER_COUNT=4 \
@@ -354,7 +354,7 @@ API_STARTUP_TIMEOUT=60 \
 make stack-run
 ```
 
-Set `LLAMA_RUNTIME_VERSION` only when you intentionally want to override the stack runner default. Releases in this line are validated against `v0.5.0`.
+Set `LLAMA_RUNTIME_VERSION` only when you intentionally want to override the stack runner default. Releases in this line are validated against `v0.6.0`.
 
 Optional smoke overrides:
 
@@ -367,4 +367,4 @@ SMOKE_SUMMARIZER_CONTEXT_SIZE=4096 \
 make smoke
 ```
 
-For `make smoke-budget`, the stack runner constrains the main generation runtime while keeping the summarizer runtime on a larger context window so the reducer can process the oversized prompt before the API returns the expected `422`.
+For `make smoke-budget`, the stack runner constrains the main generation runtime while keeping the summarizer runtime on a larger context window so oversized prompts exercise the expected `422` path instead of reaching final generation.

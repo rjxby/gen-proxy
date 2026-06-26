@@ -30,12 +30,7 @@ public static class SetupIntegrationLayer
         services.AddSingleton<IGenerationRuntimeClient>(serviceProvider =>
         {
             var options = serviceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<GenerationRuntimeOptions>>().Value;
-            var loggerFactory = serviceProvider.GetRequiredService<ILoggerFactory>();
-            var runtimeClient = new GrpcLlamaRuntimeClient(
-                runtimeName: "generation",
-                address: options.Address,
-                logger: loggerFactory.CreateLogger<GrpcLlamaRuntimeClient>(),
-                apiKey: options.ApiKey);
+            var runtimeClient = CreateGrpcRuntimeClient(serviceProvider, "generation", options.Address, options.ApiKey);
 
             return new GenerationRuntimeClient(runtimeClient);
         });
@@ -46,18 +41,27 @@ public static class SetupIntegrationLayer
             services.AddSingleton<IPromptReducerRuntimeClient>(serviceProvider =>
             {
                 var options = serviceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<PromptReducerRuntimeOptions>>().Value;
-                var loggerFactory = serviceProvider.GetRequiredService<ILoggerFactory>();
-                var runtimeClient = new GrpcLlamaRuntimeClient(
-                    runtimeName: "prompt_reducer",
-                    address: options.Address,
-                    logger: loggerFactory.CreateLogger<GrpcLlamaRuntimeClient>(),
-                    apiKey: options.ApiKey);
+                var runtimeClient = CreateGrpcRuntimeClient(serviceProvider, "prompt_reducer", options.Address, options.ApiKey);
 
                 return new PromptReducerRuntimeClient(runtimeClient);
             });
         }
 
         return services;
+    }
+
+    private static GrpcLlamaRuntimeClient CreateGrpcRuntimeClient(
+        IServiceProvider serviceProvider,
+        string runtimeName,
+        string address,
+        string? apiKey)
+    {
+        var loggerFactory = serviceProvider.GetRequiredService<ILoggerFactory>();
+        return new GrpcLlamaRuntimeClient(
+            runtimeName,
+            address,
+            loggerFactory.CreateLogger<GrpcLlamaRuntimeClient>(),
+            apiKey);
     }
 
     private static bool IsValidRuntimeAddress(string address)

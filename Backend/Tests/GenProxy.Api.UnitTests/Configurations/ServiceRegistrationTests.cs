@@ -15,7 +15,9 @@ public class ServiceRegistrationTests
     [Fact]
     public void AddLayers_WhenPromptReducerRuntimeDisabled_ResolvesResponseGenerationServiceWithoutReducerClient()
     {
-        var services = CreateServiceCollection(promptReducerRuntimeEnabled: false, promptReducerRuntimeAddress: string.Empty);
+        var services = CreateServiceCollection(
+            promptReducerRuntimeEnabled: false,
+            promptReducerRuntimeAddress: string.Empty);
         using var serviceProvider = services.BuildServiceProvider(validateScopes: true);
 
         var service = serviceProvider.GetRequiredService<IResponseGenerationService>();
@@ -31,7 +33,9 @@ public class ServiceRegistrationTests
     [Fact]
     public void AddLayers_WhenPromptReducerRuntimeEnabled_RegistersReducerClientAndSummarizer()
     {
-        var services = CreateServiceCollection(promptReducerRuntimeEnabled: true, promptReducerRuntimeAddress: "https://localhost:50052");
+        var services = CreateServiceCollection(
+            promptReducerRuntimeEnabled: true,
+            promptReducerRuntimeAddress: "https://localhost:50052");
         using var serviceProvider = services.BuildServiceProvider(validateScopes: true);
 
         var reducers = serviceProvider.GetServices<IPromptReducer>().ToList();
@@ -42,7 +46,9 @@ public class ServiceRegistrationTests
         reducers.Should().Contain(reducer => reducer is LlmPromptSummarizer);
     }
 
-    private static IServiceCollection CreateServiceCollection(bool promptReducerRuntimeEnabled, string promptReducerRuntimeAddress)
+    private static IServiceCollection CreateServiceCollection(
+        bool promptReducerRuntimeEnabled,
+        string promptReducerRuntimeAddress)
     {
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>

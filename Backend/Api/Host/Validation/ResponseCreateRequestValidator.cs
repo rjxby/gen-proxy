@@ -88,7 +88,12 @@ public sealed class ResponseCreateRequestValidator : AbstractValidator<ResponseC
                     context.AddFailure("metadata", $"Metadata keys must be at most {limits.MaxMetadataKeyCharacters} characters.");
                 }
 
-                if (metadata.Values.Any(value => value.Length > limits.MaxMetadataValueCharacters))
+                if (metadata.Values.Any(value => value is null))
+                {
+                    context.AddFailure("metadata", "Metadata values must not be null.");
+                }
+
+                if (metadata.Values.Any(value => value is not null && value.Length > limits.MaxMetadataValueCharacters))
                 {
                     context.AddFailure("metadata", $"Metadata values must be at most {limits.MaxMetadataValueCharacters} characters.");
                 }
@@ -166,7 +171,7 @@ public sealed class ResponseCreateRequestValidator : AbstractValidator<ResponseC
             context.AddFailure("response_format.json_schema.schema", "JSON schema payload must be an object.");
         }
 
-        if (jsonSchema.Strict == false)
+        if (jsonSchema.Strict is not true)
         {
             context.AddFailure(
                 "response_format.json_schema.strict",

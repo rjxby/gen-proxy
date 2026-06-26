@@ -38,7 +38,7 @@ public class ResponsesEndpointTests
         {
             model = "stories15m",
             input = StructuredInput("hello world"),
-            max_output_tokens = 64
+            max_output_tokens = 512
         });
 
         response.StatusCode.Should().Be(HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
@@ -256,7 +256,7 @@ public class ResponsesEndpointTests
             model = "stories15m",
             input = StructuredInput("return valid json"),
             response_format = JsonSchemaResponseFormat(),
-            max_output_tokens = 64
+            max_output_tokens = 512
         });
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -306,14 +306,37 @@ public class ResponsesEndpointTests
             input = StructuredInput("hello world"),
             temperature = 0.25,
             top_p = 0.8,
-            max_output_tokens = 64
+            max_output_tokens = 512
         });
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         generationRuntimeClient.LastGenerationOptions.Should().NotBeNull();
         generationRuntimeClient.LastGenerationOptions!.Temperature.Should().BeApproximately(0.25f, 0.001f);
         generationRuntimeClient.LastGenerationOptions.TopP.Should().BeApproximately(0.8f, 0.001f);
-        generationRuntimeClient.LastGenerationOptions.MaxOutputTokens.Should().Be(64);
+        generationRuntimeClient.LastGenerationOptions.MaxOutputTokens.Should().Be(512);
+    }
+
+    [Fact]
+    public async Task PostResponses_WhenMaxOutputTokensDoesNotMatchRuntimeBudget_ReturnsBadRequest()
+    {
+        await using var factory = CreateFactory(
+            new FakeGenerationRuntimeClient(),
+            new FakePromptReducerRuntimeClient());
+
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = StructuredInput("hello world"),
+            max_output_tokens = 64
+        });
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var body = await response.Content.ReadAsStringAsync();
+        body.Should().Contain("Unsupported generation overrides.");
+        body.Should().Contain("max_output_tokens");
     }
 
     [Fact]
@@ -960,10 +983,11 @@ public class ResponsesEndpointTests
     }
 
     [Fact]
-    public async Task PostResponses_WhenReducerRuntimeRejectsOversizedReductionPrompt_ReturnsUnprocessableEntity()
+    public async Task PostResponses_WhenReducerRuntimeRejectsOversizedReductionPrompt_ReturnsUnprocessableEntityWithoutGeneration()
     {
+        var generationRuntimeClient = new FakeGenerationRuntimeClient(oversizedPrompt: "hello world");
         await using var factory = CreateFactory(
-            new FakeGenerationRuntimeClient(fitsAfterReduction: false, oversizedPrompt: "hello world"),
+            generationRuntimeClient,
             new ThrowingPromptReducerRuntimeClient(
                 new LlamaRuntimePromptBudgetExceededException("Prompt exceeds input budget: 6250 tokens > 3584 allowed.")));
 
@@ -977,6 +1001,7 @@ public class ResponsesEndpointTests
         });
 
         response.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+        generationRuntimeClient.LastPrompt.Should().BeNull();
         var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
         problem.Should().NotBeNull();
         problem!.Title.Should().Be("Prompt exceeds token budget.");

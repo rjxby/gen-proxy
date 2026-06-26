@@ -9,7 +9,7 @@ namespace GenProxy.Api.UnitTests;
 public class PromptReductionPipelineTests
 {
     [Fact]
-    public async Task ReduceAsync_OrdersReducersByExplicitOrder()
+    public async Task ReduceAsync_StopsAfterFirstSuccessfulReducerInExplicitOrder()
     {
         var calls = new List<string>();
         var pipeline = new PromptReductionPipeline(
@@ -17,12 +17,17 @@ public class PromptReductionPipelineTests
             new TestPromptReducer("fallback", 200, (_, _, _) =>
             {
                 calls.Add("fallback");
-                return Task.FromResult(new PromptReductionResult("fallback", true, PromptReductionStrategy.LeadingTruncation));
+                return Task.FromResult(new PromptReductionResult("short", false, PromptReductionStrategy.None));
             }),
             new TestPromptReducer("summary", 100, (_, _, _) =>
             {
                 calls.Add("summary");
                 return Task.FromResult(new PromptReductionResult("short", true, PromptReductionStrategy.LlmSummarizer));
+            }),
+            new TestPromptReducer("already-fits", 150, (prompt, _, _) =>
+            {
+                calls.Add("already-fits");
+                return Task.FromResult(new PromptReductionResult(prompt, false, PromptReductionStrategy.None));
             })
         ]);
 
@@ -58,6 +63,32 @@ public class PromptReductionPipelineTests
         result.Prompt.Should().Be("short");
         result.WasReduced.Should().BeTrue();
         result.Strategy.Should().Be(PromptReductionStrategy.LeadingTruncation);
+    }
+
+    [Fact]
+    public async Task ReduceAsync_WhenFirstReducerReduces_DoesNotRunLaterReducers()
+    {
+        var calls = new List<string>();
+        var pipeline = new PromptReductionPipeline(
+        [
+            new TestPromptReducer("fallback", 200, (_, _, _) =>
+            {
+                calls.Add("fallback");
+                return Task.FromResult(new PromptReductionResult("fits", true, PromptReductionStrategy.LeadingTruncation));
+            }),
+            new TestPromptReducer("summary", 100, (_, _, _) =>
+            {
+                calls.Add("summary");
+                return Task.FromResult(new PromptReductionResult("still too long", true, PromptReductionStrategy.LlmSummarizer));
+            })
+        ]);
+
+        var result = await pipeline.ReduceAsync("prompt", 100, CancellationToken.None);
+
+        calls.Should().Equal("summary");
+        result.Prompt.Should().Be("still too long");
+        result.WasReduced.Should().BeTrue();
+        result.Strategy.Should().Be(PromptReductionStrategy.LlmSummarizer);
     }
 
     [Fact]
