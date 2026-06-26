@@ -44,7 +44,7 @@ public sealed class LlmPromptSummarizer(
         }
         catch (LlamaRuntimeCallException)
         {
-            throw;
+            return new PromptReductionResult(prompt, false, PromptReductionStrategy.None);
         }
         catch (LlamaRuntimePromptBudgetExceededException)
         {

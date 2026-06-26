@@ -214,6 +214,23 @@ public class ResponseCreateRequestValidatorTests
     }
 
     [Fact]
+    public async Task ValidateAsync_WhenMetadataValueIsNull_ReturnsError()
+    {
+        var result = await _validator.ValidateAsync(new ResponseCreateRequest
+        {
+            Model = "stories15m",
+            Input = CreateInput("hello"),
+            Metadata = new Dictionary<string, string>
+            {
+                ["trace_id"] = null!
+            }
+        });
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(error => error.PropertyName == "metadata");
+    }
+
+    [Fact]
     public async Task ValidateAsync_WhenResponseFormatTypeIsUnknown_ReturnsError()
     {
         var result = await _validator.ValidateAsync(new ResponseCreateRequest
@@ -370,6 +387,23 @@ public class ResponseCreateRequestValidatorTests
     {
         var responseFormat = CreateJsonSchemaResponseFormat();
         responseFormat.JsonSchema!.Strict = false;
+
+        var result = await _validator.ValidateAsync(new ResponseCreateRequest
+        {
+            Model = "stories15m",
+            Input = CreateInput("hello"),
+            ResponseFormat = responseFormat
+        });
+
+        result.IsValid.Should().BeFalse();
+        result.Errors.Should().Contain(error => error.PropertyName == "response_format.json_schema.strict");
+    }
+
+    [Fact]
+    public async Task ValidateAsync_WhenJsonSchemaStrictIsMissing_ReturnsError()
+    {
+        var responseFormat = CreateJsonSchemaResponseFormat();
+        responseFormat.JsonSchema!.Strict = null;
 
         var result = await _validator.ValidateAsync(new ResponseCreateRequest
         {

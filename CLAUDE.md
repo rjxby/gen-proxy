@@ -46,4 +46,4 @@ Stateless HTTP orchestration layer for token budgeting, prompt reduction, and re
 - Keep prompt and generated-text payloads out of normal structured logs.
 - Add or update xUnit tests for behavior changes.
 - Treat `GenProxy.StackRunner` as local smoke infrastructure, not a replacement for focused unit and integration coverage.
-- The local stack workflow is pinned to `llama-runtime v0.5.0` unless `LLAMA_RUNTIME_VERSION` is set explicitly.
+- The local stack workflow is pinned to `llama-runtime v0.6.0` unless `LLAMA_RUNTIME_VERSION` is set explicitly.

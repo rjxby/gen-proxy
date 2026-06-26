@@ -41,6 +41,7 @@ public class ResponseGenerationService(
             }
 
             var estimation = await _generationRuntimeClient.EstimateTokensAsync(effectivePrompt, cancellationToken);
+            EnsureRequestedOutputBudgetIsSupported(command.MaxOutputTokens, estimation);
             var wasReduced = false;
             var reductionStrategy = PromptReductionStrategy.None;
 
@@ -63,6 +64,7 @@ public class ResponseGenerationService(
                 }
 
                 estimation = await _generationRuntimeClient.EstimateTokensAsync(effectivePrompt, cancellationToken);
+                EnsureRequestedOutputBudgetIsSupported(command.MaxOutputTokens, estimation);
                 if (!estimation.Fits)
                 {
                     throw new PromptBudgetExceededException(
@@ -124,6 +126,17 @@ public class ResponseGenerationService(
             GenProxyMetrics.RequestsFailed.Add(1, KeyValuePair.Create<string, object?>("model", command.Model));
             throw;
         }
+    }
+
+    private static void EnsureRequestedOutputBudgetIsSupported(int? maxOutputTokens, TokenEstimation estimation)
+    {
+        if (maxOutputTokens is null || maxOutputTokens == estimation.ReservedOutputTokens)
+        {
+            return;
+        }
+
+        throw new LlamaRuntimeUnsupportedGenerationOverridesException(
+            $"max_output_tokens must match the configured generation runtime output budget of {estimation.ReservedOutputTokens} tokens.");
     }
 
     private static void EnsureStructuredJsonResponseSatisfied(string content, LlamaRuntimeTrace? runtimeTrace)

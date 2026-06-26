@@ -41,10 +41,7 @@ public sealed class GrpcLlamaRuntimeClient : ILlamaRuntimeClient
                 cancellationToken: cancellationToken);
 
             stopwatch.Stop();
-            GenProxyMetrics.UpstreamLatencyMs.Record(
-                stopwatch.Elapsed.TotalMilliseconds,
-                KeyValuePair.Create<string, object?>("operation", "estimate_tokens"),
-                KeyValuePair.Create<string, object?>("runtime", _runtimeName));
+            RecordUpstreamLatency("estimate_tokens", stopwatch.Elapsed);
             _logger.LogInformation(
                 "Upstream token estimation completed. Runtime={Runtime} TokenCount={TokenCount} Fits={Fits} DurationMs={DurationMs}",
                 _runtimeName,
@@ -62,19 +59,12 @@ public sealed class GrpcLlamaRuntimeClient : ILlamaRuntimeClient
         catch (RpcException exception)
         {
             stopwatch.Stop();
-            GenProxyMetrics.UpstreamFailures.Add(1, KeyValuePair.Create<string, object?>("runtime", _runtimeName));
-            var promptBudgetException = TryCreatePromptBudgetExceededException(exception);
-            if (promptBudgetException is not null)
-            {
-                throw promptBudgetException;
-            }
-
-            throw CreateUpstreamException("estimate tokens", exception);
+            throw HandleRpcException("estimate tokens", exception, TryCreatePromptBudgetExceededException);
         }
         catch (HttpRequestException exception)
         {
             stopwatch.Stop();
-            GenProxyMetrics.UpstreamFailures.Add(1, KeyValuePair.Create<string, object?>("runtime", _runtimeName));
+            RecordUpstreamFailure();
             throw CreateUpstreamException("estimate tokens", exception);
         }
     }
@@ -90,10 +80,7 @@ public sealed class GrpcLlamaRuntimeClient : ILlamaRuntimeClient
                 cancellationToken);
 
             stopwatch.Stop();
-            GenProxyMetrics.UpstreamLatencyMs.Record(
-                stopwatch.Elapsed.TotalMilliseconds,
-                KeyValuePair.Create<string, object?>("operation", "get_capabilities"),
-                KeyValuePair.Create<string, object?>("runtime", _runtimeName));
+            RecordUpstreamLatency("get_capabilities", stopwatch.Elapsed);
 
             var capabilities = new LlamaCapabilities(
                 reply.ModelId,
@@ -116,24 +103,13 @@ public sealed class GrpcLlamaRuntimeClient : ILlamaRuntimeClient
         catch (RpcException exception)
         {
             stopwatch.Stop();
-            GenProxyMetrics.UpstreamFailures.Add(1, KeyValuePair.Create<string, object?>("runtime", _runtimeName));
-            throw CreateUpstreamException("get capabilities", exception);
+            throw HandleRpcException("get capabilities", exception);
         }
         catch (HttpRequestException exception)
         {
             stopwatch.Stop();
-            GenProxyMetrics.UpstreamFailures.Add(1, KeyValuePair.Create<string, object?>("runtime", _runtimeName));
+            RecordUpstreamFailure();
             throw CreateUpstreamException("get capabilities", exception);
-        }
-        catch (Exception exception)
-        {
-            stopwatch.Stop();
-            if (exception is OperationCanceledException)
-            {
-                throw;
-            }
-
-            throw;
         }
     }
 
@@ -199,10 +175,7 @@ public sealed class GrpcLlamaRuntimeClient : ILlamaRuntimeClient
                 cancellationToken: cancellationToken);
 
             stopwatch.Stop();
-            GenProxyMetrics.UpstreamLatencyMs.Record(
-                stopwatch.Elapsed.TotalMilliseconds,
-                KeyValuePair.Create<string, object?>("operation", "generate"),
-                KeyValuePair.Create<string, object?>("runtime", _runtimeName));
+            RecordUpstreamLatency("generate", stopwatch.Elapsed);
             _logger.LogInformation(
                 "Upstream generation completed. Runtime={Runtime} RequestId={RequestId} DurationMs={DurationMs}",
                 _runtimeName,
@@ -226,39 +199,52 @@ public sealed class GrpcLlamaRuntimeClient : ILlamaRuntimeClient
         catch (RpcException exception)
         {
             stopwatch.Stop();
-            GenProxyMetrics.UpstreamFailures.Add(1, KeyValuePair.Create<string, object?>("runtime", _runtimeName));
-            var promptBudgetException = TryCreatePromptBudgetExceededException(exception);
-            if (promptBudgetException is not null)
-            {
-                throw promptBudgetException;
-            }
-
-            var unsupportedGenerationOverridesException = TryCreateUnsupportedGenerationOverridesException(exception);
-            if (unsupportedGenerationOverridesException is not null)
-            {
-                throw unsupportedGenerationOverridesException;
-            }
-
-            var invalidArgumentException = TryCreateInvalidArgumentException(exception);
-            if (invalidArgumentException is not null)
-            {
-                throw invalidArgumentException;
-            }
-
-            var structuredOutputException = TryCreateStructuredOutputNotSatisfiedException(exception);
-            if (structuredOutputException is not null)
-            {
-                throw structuredOutputException;
-            }
-
-            throw CreateUpstreamException("generate", exception);
+            throw HandleRpcException(
+                "generate",
+                exception,
+                TryCreatePromptBudgetExceededException,
+                TryCreateUnsupportedGenerationOverridesException,
+                TryCreateInvalidArgumentException,
+                TryCreateStructuredOutputNotSatisfiedException);
         }
         catch (HttpRequestException exception)
         {
             stopwatch.Stop();
-            GenProxyMetrics.UpstreamFailures.Add(1, KeyValuePair.Create<string, object?>("runtime", _runtimeName));
+            RecordUpstreamFailure();
             throw CreateUpstreamException("generate", exception);
         }
+    }
+
+    private void RecordUpstreamLatency(string operation, TimeSpan elapsed)
+    {
+        GenProxyMetrics.UpstreamLatencyMs.Record(
+            elapsed.TotalMilliseconds,
+            KeyValuePair.Create<string, object?>("operation", operation),
+            KeyValuePair.Create<string, object?>("runtime", _runtimeName));
+    }
+
+    private void RecordUpstreamFailure()
+    {
+        GenProxyMetrics.UpstreamFailures.Add(1, KeyValuePair.Create<string, object?>("runtime", _runtimeName));
+    }
+
+    private Exception HandleRpcException(
+        string operation,
+        RpcException exception,
+        params Func<RpcException, Exception?>[] translators)
+    {
+        RecordUpstreamFailure();
+
+        foreach (var translator in translators)
+        {
+            var translatedException = translator(exception);
+            if (translatedException is not null)
+            {
+                return translatedException;
+            }
+        }
+
+        return CreateUpstreamException(operation, exception);
     }
 
     private LlamaRuntimeCallException CreateUpstreamException(string operation, Exception exception)

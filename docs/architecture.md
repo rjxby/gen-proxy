@@ -36,7 +36,7 @@ It validates Responses-style requests, normalizes input into a runtime prompt, e
 - Gen Proxy may use a second prompt-reducer runtime for prompt summarization.
 - Runtime addresses are configured with `GenerationRuntime:*` and `PromptReducerRuntime:*` options and must use HTTPS when enabled.
 - The gRPC client supports `EstimateTokens`, `GetCapabilities`, and `Generate`.
-- `response_format.type=json_schema` requires generation runtime structured JSON output capability support before generation and is translated to the `llama-runtime v0.5.0` `json` response format with the raw schema payload.
+- `response_format.type=json_schema` requires generation runtime structured JSON output capability support before generation and is translated to the `llama-runtime v0.6.0` `json` response format with the raw schema payload.
 - Schema responses must include runtime trace metadata showing structured output was applied and satisfied, and the generated content must parse as a JSON object.
 - Request-level generation options are forwarded to the runtime; support for `temperature`, `top_p`, and `max_output_tokens` is runtime-defined.
 
@@ -55,5 +55,5 @@ It validates Responses-style requests, normalizes input into a runtime prompt, e
 
 - `make stack-run` starts compatible generation and summarizer runtimes, waits for readiness, then starts the API.
 - The stack runner downloads and caches `llama-runtime` release artifacts, writes runtime logs, tracks process ids, and cleans up managed processes on exit.
-- The local stack workflow defaults to `llama-runtime v0.5.0` unless `LLAMA_RUNTIME_VERSION` is set explicitly.
+- The local stack workflow defaults to `llama-runtime v0.6.0` unless `LLAMA_RUNTIME_VERSION` is set explicitly.
 - `make smoke` and `make smoke-budget` use the same stack runner for repeatable local verification.
