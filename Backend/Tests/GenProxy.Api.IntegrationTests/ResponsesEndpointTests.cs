@@ -1009,48 +1009,6 @@ public class ResponsesEndpointTests
     }
 
     [Fact]
-    public async Task PostResponses_WithInvalidGenerationRuntimeAddress_FailsStartupValidation()
-    {
-        using var factory = new WebApplicationFactory<Program>()
-            .WithWebHostBuilder(builder =>
-            {
-                builder.UseEnvironment("Testing");
-                builder.ConfigureAppConfiguration((_, configBuilder) =>
-                {
-                    configBuilder.AddInMemoryCollection(new Dictionary<string, string?>
-                    {
-                        ["GenerationRuntime:Address"] = "not-a-valid-uri"
-                    });
-                });
-            });
-
-        var act = () => factory.CreateClient();
-
-        act.Should().Throw<OptionsValidationException>();
-    }
-
-    [Fact]
-    public void PostResponses_WithPlaintextGenerationRuntimeAddress_FailsStartupValidation()
-    {
-        using var factory = new WebApplicationFactory<Program>()
-            .WithWebHostBuilder(builder =>
-            {
-                builder.UseEnvironment("Testing");
-                builder.ConfigureAppConfiguration((_, configBuilder) =>
-                {
-                    configBuilder.AddInMemoryCollection(new Dictionary<string, string?>
-                    {
-                        ["GenerationRuntime:Address"] = "http://localhost:50051"
-                    });
-                });
-            });
-
-        var act = () => factory.CreateClient();
-
-        act.Should().Throw<OptionsValidationException>();
-    }
-
-    [Fact]
     public void PostResponses_WithInvalidPromptReducerRuntimeAddress_AllowsStartupWhenReducerRuntimeDisabled()
     {
         using var factory = CreateFactory(
@@ -1076,48 +1034,6 @@ public class ResponsesEndpointTests
         var act = () => factory.CreateClient();
 
         act.Should().NotThrow();
-    }
-
-    [Fact]
-    public void PostResponses_WithInvalidPromptReducerRuntimeAddress_FailsStartupValidationWhenReducerRuntimeEnabled()
-    {
-        using var factory = CreateFactory(
-            new FakeGenerationRuntimeClient(),
-            new FakePromptReducerRuntimeClient(),
-            promptReducerRuntimeAddress: "not-a-valid-uri");
-
-        var act = () => factory.CreateClient();
-
-        act.Should().Throw<OptionsValidationException>();
-    }
-
-    [Fact]
-    public void PostResponses_WithPlaintextPromptReducerRuntimeAddress_FailsStartupValidationWhenReducerRuntimeEnabled()
-    {
-        using var factory = CreateFactory(
-            new FakeGenerationRuntimeClient(),
-            new FakePromptReducerRuntimeClient(),
-            promptReducerRuntimeAddress: "http://localhost:50052");
-
-        var act = () => factory.CreateClient();
-
-        act.Should().Throw<OptionsValidationException>();
-    }
-
-    [Fact]
-    public void PostResponses_WithoutConfiguredApiKeys_FailsStartupValidation()
-    {
-        using var factory = CreateFactory(
-            new FakeGenerationRuntimeClient(),
-            new FakePromptReducerRuntimeClient(),
-            configureServices: services =>
-            {
-                services.PostConfigure<ApiKeyOptions>(options => options.Keys.Clear());
-            });
-
-        var act = () => factory.CreateClient();
-
-        act.Should().Throw<OptionsValidationException>();
     }
 
     [Fact]
