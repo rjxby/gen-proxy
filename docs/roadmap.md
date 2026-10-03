@@ -50,13 +50,13 @@ The original roadmap included several early stages that are now implemented. The
 - Plain runtime output is wrapped as an assistant message with `output_text`.
 - Runtime usage is copied into the Responses API usage envelope when available.
 - Public `response_format.type=json_schema` checks runtime structured JSON output capability before generation.
-- The runtime adapter translates public `json_schema` requests to the `llama-runtime v0.6.0` `json` response format with the raw schema payload.
+- The runtime adapter translates public `json_schema` requests to the `llama-runtime v0.7.0` `json` response format with the raw schema payload.
 - Schema responses must include a runtime trace showing structured output was applied and satisfied.
 - Schema responses are parsed and must be valid JSON objects; otherwise the request fails with `502`.
 
 ### Local stack and smoke coverage
 
-- The local stack runner defaults to `llama-runtime v0.6.0` unless `LLAMA_RUNTIME_VERSION` is set explicitly.
+- The local stack runner defaults to `llama-runtime v0.7.0` unless `LLAMA_RUNTIME_VERSION` is set explicitly.
 - `make smoke` runs basic generation, auth, invalid-request, and minimal JSON schema output checks.
 - `make smoke-budget` keeps the constrained oversized-prompt `422` check.
 

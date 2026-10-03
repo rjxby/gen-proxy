@@ -13,6 +13,7 @@ var app = builder.Build();
 
 app.UseHttpLogging();
 app.UseExceptionHandler();
+app.UseRequestTimeouts();
 
 if (app.Environment.IsDevelopment())
 {

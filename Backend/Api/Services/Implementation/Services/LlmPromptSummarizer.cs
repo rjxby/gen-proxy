@@ -38,6 +38,11 @@ public sealed class LlmPromptSummarizer(
                 cancellationToken);
 
             var reducedPrompt = response.Content.Trim();
+            if (reducedPrompt.Length == 0)
+            {
+                return new PromptReductionResult(prompt, false, PromptReductionStrategy.None);
+            }
+
             var wasReduced = !string.Equals(prompt, reducedPrompt, StringComparison.Ordinal);
 
             return new PromptReductionResult(reducedPrompt, wasReduced, PromptReductionStrategy.LlmSummarizer);
@@ -47,6 +52,14 @@ public sealed class LlmPromptSummarizer(
             return new PromptReductionResult(prompt, false, PromptReductionStrategy.None);
         }
         catch (LlamaRuntimePromptBudgetExceededException)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (LlamaRuntimeTimeoutException)
         {
             throw;
         }

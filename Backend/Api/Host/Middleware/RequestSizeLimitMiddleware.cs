@@ -1,3 +1,4 @@
+using GenProxy.Api.Host.Endpoints;
 using GenProxy.Api.Host.Validation;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
@@ -10,14 +11,13 @@ public sealed class RequestSizeLimitMiddleware(
     IOptions<RequestLimitsOptions> options,
     IProblemDetailsService problemDetailsService)
 {
-    private static readonly PathString ResponsesPath = new("/v1/responses");
     private readonly RequestDelegate _next = next;
     private readonly RequestLimitsOptions _options = options.Value;
     private readonly IProblemDetailsService _problemDetailsService = problemDetailsService;
 
     public async Task InvokeAsync(HttpContext context)
     {
-        if (HttpMethods.IsPost(context.Request.Method) && context.Request.Path == ResponsesPath)
+        if (context.GetEndpoint()?.Metadata.GetMetadata<ResponsesEndpointMetadata>() is not null)
         {
             var maxRequestBodySizeFeature = context.Features.Get<IHttpMaxRequestBodySizeFeature>();
             if (maxRequestBodySizeFeature is { IsReadOnly: false })

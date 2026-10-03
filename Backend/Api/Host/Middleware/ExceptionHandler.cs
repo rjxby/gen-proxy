@@ -62,6 +62,11 @@ public sealed class ExceptionHandler(
                 "Invalid runtime request.",
                 ex.Message,
                 LogLevel.Information),
+            LlamaRuntimeTimeoutException ex => (
+                StatusCodes.Status504GatewayTimeout,
+                "Upstream runtime timed out.",
+                ex.Message,
+                LogLevel.Warning),
             LlamaRuntimeCallException ex => (
                 StatusCodes.Status503ServiceUnavailable,
                 "Upstream runtime unavailable.",

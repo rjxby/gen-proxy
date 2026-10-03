@@ -17,6 +17,7 @@ public static class SetupIntegrationLayer
             .Validate(
                 options => IsValidRuntimeAddress(options.Address),
                 "Generation runtime address must be an absolute HTTPS URI.")
+            .Validate(options => options.Timeouts.IsValid(), "Generation runtime timeouts must be greater than zero and no longer than one day.")
             .ValidateOnStart();
 
         services
@@ -25,12 +26,13 @@ public static class SetupIntegrationLayer
             .Validate(
                 options => !options.Enabled || IsValidRuntimeAddress(options.Address),
                 "Prompt reducer runtime address must be an absolute HTTPS URI.")
+            .Validate(options => !options.Enabled || options.Timeouts.IsValid(), "Prompt reducer runtime timeouts must be greater than zero and no longer than one day.")
             .ValidateOnStart();
 
         services.AddSingleton<IGenerationRuntimeClient>(serviceProvider =>
         {
             var options = serviceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<GenerationRuntimeOptions>>().Value;
-            var runtimeClient = CreateGrpcRuntimeClient(serviceProvider, "generation", options.Address, options.ApiKey);
+            var runtimeClient = CreateGrpcRuntimeClient(serviceProvider, "generation", options.Address, options.ApiKey, options.Timeouts);
 
             return new GenerationRuntimeClient(runtimeClient);
         });
@@ -41,7 +43,7 @@ public static class SetupIntegrationLayer
             services.AddSingleton<IPromptReducerRuntimeClient>(serviceProvider =>
             {
                 var options = serviceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<PromptReducerRuntimeOptions>>().Value;
-                var runtimeClient = CreateGrpcRuntimeClient(serviceProvider, "prompt_reducer", options.Address, options.ApiKey);
+                var runtimeClient = CreateGrpcRuntimeClient(serviceProvider, "prompt_reducer", options.Address, options.ApiKey, options.Timeouts);
 
                 return new PromptReducerRuntimeClient(runtimeClient);
             });
@@ -54,14 +56,16 @@ public static class SetupIntegrationLayer
         IServiceProvider serviceProvider,
         string runtimeName,
         string address,
-        string? apiKey)
+        string? apiKey,
+        RuntimeTimeoutOptions timeouts)
     {
         var loggerFactory = serviceProvider.GetRequiredService<ILoggerFactory>();
         return new GrpcLlamaRuntimeClient(
             runtimeName,
             address,
             loggerFactory.CreateLogger<GrpcLlamaRuntimeClient>(),
-            apiKey);
+            apiKey,
+            timeouts);
     }
 
     private static bool IsValidRuntimeAddress(string address)

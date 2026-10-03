@@ -56,6 +56,12 @@ public class ResponseGenerationService(
                 wasReduced = reduction.WasReduced;
                 reductionStrategy = reduction.Strategy;
 
+                if (string.IsNullOrWhiteSpace(effectivePrompt))
+                {
+                    throw new PromptBudgetExceededException(
+                        "Prompt exceeds token budget after prompt reduction because no non-whitespace input remains.");
+                }
+
                 if (wasReduced)
                 {
                     GenProxyMetrics.PromptReductions.Add(

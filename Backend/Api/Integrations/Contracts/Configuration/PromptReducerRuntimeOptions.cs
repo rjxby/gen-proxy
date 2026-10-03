@@ -9,4 +9,6 @@ public class PromptReducerRuntimeOptions
     public string Address { get; set; } = "https://localhost:50052";
 
     public string? ApiKey { get; set; }
+
+    public RuntimeTimeoutOptions Timeouts { get; set; } = new();
 }
