@@ -10,7 +10,7 @@ namespace GenProxy.StackRunner;
 
 internal static class StackRunnerDefaults
 {
-    public const string LlamaRuntimeVersion = "v0.6.0";
+    public const string LlamaRuntimeVersion = "v0.7.0";
     public const string LatestReleaseKeyword = "latest";
 }
 
@@ -256,7 +256,7 @@ internal sealed class StackRunnerApplicationInstance(StackRunnerOptions options)
             cancellationToken);
 
         _managedProcesses.Add(process);
-        await WritePidFileAsync(registration, process.ProcessId, cancellationToken);
+        await WritePidFileAsync(registration, process.Identity, cancellationToken);
         ConsoleStyling.Info($">>> {registration.Name} runtime pid {process.ProcessId} (log: .runtime-logs/{registration.Name}.log)");
         return process;
     }
@@ -298,7 +298,7 @@ internal sealed class StackRunnerApplicationInstance(StackRunnerOptions options)
             cancellationToken);
 
         _managedProcesses.Add(process);
-        await WritePidFileAsync(GetPidTrackedProcess("api"), process.ProcessId, cancellationToken);
+        await WritePidFileAsync(GetPidTrackedProcess("api"), process.Identity, cancellationToken);
         return process;
     }
 
@@ -400,30 +400,23 @@ internal sealed class StackRunnerApplicationInstance(StackRunnerOptions options)
         }
     }
 
-    private static async Task StopProcessFromPidFileAsync(PidTrackedProcessRegistration registration)
+    internal static async Task StopProcessFromPidFileAsync(PidTrackedProcessRegistration registration)
     {
-        var pidFile = registration.PidFile;
-        if (!File.Exists(pidFile))
+        var identity = await ProcessIdentityFile.ReadAsync(registration.PidFile);
+        if (identity is null)
         {
+            if (File.Exists(registration.PidFile))
+            {
+                ConsoleStyling.Warning($">>> Ignoring unverified {registration.Name} process record");
+                File.Delete(registration.PidFile);
+            }
+
             return;
         }
 
-        var content = await File.ReadAllTextAsync(pidFile);
-        if (!int.TryParse(content.Trim(), out var pid))
-        {
-            File.Delete(pidFile);
-            return;
-        }
-
-        if (!ProcessUtilities.TryGetProcess(pid, out var process))
-        {
-            File.Delete(pidFile);
-            return;
-        }
-
-        ConsoleStyling.Warning($">>> Stopping {registration.Name} process (pid {pid})");
-        await ProcessUtilities.StopAsync(process, TimeSpan.FromSeconds(10));
-        File.Delete(pidFile);
+        ConsoleStyling.Info($">>> Checking recorded {registration.Name} process (pid {identity.ProcessId})");
+        await ProcessUtilities.StopAsync(identity, TimeSpan.FromSeconds(10));
+        File.Delete(registration.PidFile);
     }
 
     private async Task CleanupAsync()
@@ -433,14 +426,34 @@ internal sealed class StackRunnerApplicationInstance(StackRunnerOptions options)
             return;
         }
 
+        List<Exception> failures = [];
         foreach (var process in _managedProcesses.AsEnumerable().Reverse())
         {
-            await process.DisposeAsync();
+            try
+            {
+                await process.DisposeAsync();
+            }
+            catch (Exception exception)
+            {
+                failures.Add(exception);
+            }
         }
 
         foreach (var registration in _pidTrackedProcesses.Reverse())
         {
-            DeleteFileIfExists(registration.PidFile);
+            try
+            {
+                DeleteFileIfExists(registration.PidFile);
+            }
+            catch (Exception exception)
+            {
+                failures.Add(exception);
+            }
+        }
+
+        if (failures.Count > 0)
+        {
+            throw new AggregateException("Failed to clean up the local stack.", failures);
         }
     }
 
@@ -452,10 +465,10 @@ internal sealed class StackRunnerApplicationInstance(StackRunnerOptions options)
 
     private static Task WritePidFileAsync(
         PidTrackedProcessRegistration registration,
-        int processId,
+        ProcessIdentity identity,
         CancellationToken cancellationToken)
     {
-        return File.WriteAllTextAsync(registration.PidFile, processId.ToString() + Environment.NewLine, cancellationToken);
+        return ProcessIdentityFile.WriteAsync(registration.PidFile, identity, cancellationToken);
     }
 
     private static void DeleteFileIfExists(string path)
@@ -793,23 +806,27 @@ internal sealed record PidTrackedProcessRegistration(string Name, string PidFile
 internal sealed class ManagedProcess : IAsyncDisposable
 {
     private readonly Process _process;
+    private readonly CancellationTokenSource _pumpCancellation;
+    public ProcessIdentity Identity { get; }
     private Task _stdoutPump;
     private Task _stderrPump;
     private readonly TaskCompletionSource _startupTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TextWriter? _logWriter;
     private int _stopStarted;
 
-    private ManagedProcess(Process process, Task stdoutPump, Task stderrPump, TextWriter? logWriter)
+    private ManagedProcess(Process process, ProcessIdentity identity, CancellationTokenSource pumpCancellation, TextWriter logWriter)
     {
         _process = process;
-        _stdoutPump = stdoutPump;
-        _stderrPump = stderrPump;
+        Identity = identity;
+        _pumpCancellation = pumpCancellation;
+        _stdoutPump = Task.CompletedTask;
+        _stderrPump = Task.CompletedTask;
         _logWriter = logWriter;
     }
 
     public int ProcessId => _process.Id;
 
-    public static Task<ManagedProcess> StartAsync(
+    public static async Task<ManagedProcess> StartAsync(
         string name,
         ProcessStartInfo startInfo,
         string logPath,
@@ -819,40 +836,72 @@ internal sealed class ManagedProcess : IAsyncDisposable
     {
         Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
 
-        var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
-        if (!process.Start())
-        {
-            throw new InvalidOperationException($"Failed to start {name} process.");
-        }
-
         var writer = TextWriter.Synchronized(new StreamWriter(File.Open(logPath, FileMode.Create, FileAccess.Write, FileShare.Read))
         {
             AutoFlush = true
         });
+        var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
+        var pumpCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var started = false;
+        ProcessIdentity? identity = null;
 
-        var managedProcess = new ManagedProcess(process, Task.CompletedTask, Task.CompletedTask, writer);
-        managedProcess._stdoutPump = PumpAsync(
-            process.StandardOutput,
-            writer,
-            echoToConsole ? Console.Out : null,
-            startupDetector,
-            managedProcess._startupTcs,
-            cancellationToken);
-        managedProcess._stderrPump = PumpAsync(
-            process.StandardError,
-            writer,
-            echoToConsole ? Console.Error : null,
-            startupDetector,
-            managedProcess._startupTcs,
-            cancellationToken);
-
-        process.Exited += (_, _) =>
+        try
         {
-            managedProcess._startupTcs.TrySetException(
-                new InvalidOperationException($"{name} exited before startup completed. See {logPath}."));
-        };
+            started = process.Start();
+            if (!started)
+            {
+                throw new InvalidOperationException($"Failed to start {name} process.");
+            }
 
-        return Task.FromResult(managedProcess);
+            identity = ProcessIdentity.Capture(process);
+            var managedProcess = new ManagedProcess(process, identity, pumpCancellation, writer);
+            managedProcess._stdoutPump = PumpAsync(
+                process.StandardOutput,
+                writer,
+                echoToConsole ? Console.Out : null,
+                startupDetector,
+                managedProcess._startupTcs,
+                pumpCancellation.Token);
+            managedProcess._stderrPump = PumpAsync(
+                process.StandardError,
+                writer,
+                echoToConsole ? Console.Error : null,
+                startupDetector,
+                managedProcess._startupTcs,
+                pumpCancellation.Token);
+
+            process.Exited += (_, _) =>
+            {
+                managedProcess._startupTcs.TrySetException(
+                    new InvalidOperationException($"{name} exited before startup completed. See {logPath}."));
+            };
+
+            return managedProcess;
+        }
+        catch
+        {
+            try
+            {
+                if (identity is not null)
+                {
+                    await ProcessUtilities.StopAsync(identity, TimeSpan.FromSeconds(10));
+                }
+                else if (started && !process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                    await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+                }
+            }
+            finally
+            {
+                pumpCancellation.Cancel();
+                pumpCancellation.Dispose();
+                process.Dispose();
+                writer.Dispose();
+            }
+
+            throw;
+        }
     }
 
     public async Task WaitForStartupAsync(TimeSpan timeout, CancellationToken cancellationToken)
@@ -891,10 +940,30 @@ internal sealed class ManagedProcess : IAsyncDisposable
             return;
         }
 
-        await ProcessUtilities.StopAsync(_process, TimeSpan.FromSeconds(10));
-        await Task.WhenAll(_stdoutPump, _stderrPump);
-        _logWriter?.Dispose();
-        _process.Dispose();
+        try
+        {
+            try
+            {
+                await ProcessUtilities.StopAsync(Identity, TimeSpan.FromSeconds(10));
+            }
+            finally
+            {
+                _pumpCancellation.Cancel();
+                await Task.WhenAll(_stdoutPump, _stderrPump);
+            }
+        }
+        finally
+        {
+            try
+            {
+                _logWriter?.Dispose();
+            }
+            finally
+            {
+                _process.Dispose();
+                _pumpCancellation.Dispose();
+            }
+        }
     }
 
     private static async Task PumpAsync(
@@ -929,116 +998,5 @@ internal sealed class ManagedProcess : IAsyncDisposable
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
-    }
-}
-
-internal static class ProcessUtilities
-{
-    public static bool TryGetProcess(int pid, out Process process)
-    {
-        try
-        {
-            process = Process.GetProcessById(pid);
-            return true;
-        }
-        catch (ArgumentException)
-        {
-            process = null!;
-            return false;
-        }
-    }
-
-    public static async Task StopAsync(Process process, TimeSpan timeout)
-    {
-        try
-        {
-            if (process.HasExited)
-            {
-                return;
-            }
-        }
-        catch
-        {
-            return;
-        }
-
-        if (await TrySendSignalAsync(process.Id, "TERM", timeout))
-        {
-            return;
-        }
-
-        try
-        {
-            if (!process.HasExited)
-            {
-                process.Kill(entireProcessTree: true);
-                await process.WaitForExitAsync();
-            }
-        }
-        catch
-        {
-        }
-    }
-
-    private static async Task<bool> TrySendSignalAsync(int pid, string signal, TimeSpan timeout)
-    {
-        if (OperatingSystem.IsWindows())
-        {
-            return false;
-        }
-
-        try
-        {
-            using var process = new Process
-            {
-                StartInfo = new ProcessStartInfo
-                {
-                    FileName = "kill",
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
-                }
-            };
-
-            process.StartInfo.ArgumentList.Add($"-{signal}");
-            process.StartInfo.ArgumentList.Add(pid.ToString());
-
-            if (!process.Start())
-            {
-                return false;
-            }
-
-            using var cts = new CancellationTokenSource(timeout);
-            await process.WaitForExitAsync(cts.Token);
-            if (process.ExitCode != 0)
-            {
-                return false;
-            }
-
-            var waitUntil = DateTimeOffset.UtcNow + timeout;
-            while (DateTimeOffset.UtcNow < waitUntil)
-            {
-                try
-                {
-                    using var target = Process.GetProcessById(pid);
-                    if (target.HasExited)
-                    {
-                        return true;
-                    }
-                }
-                catch (ArgumentException)
-                {
-                    return true;
-                }
-
-                await Task.Delay(TimeSpan.FromMilliseconds(250));
-            }
-        }
-        catch
-        {
-            return false;
-        }
-
-        return false;
     }
 }

@@ -7,6 +7,9 @@
     <IsTestProject>true</IsTestProject>
     <CoverageEnabled>true</CoverageEnabled>
     <CollectCoverage>true</CollectCoverage>
+    <!-- Coverlet needs shared-framework compilation references to instrument the Host assembly. -->
+    <PreserveCompilationContext>true</PreserveCompilationContext>
+    <ExcludeByFile>**/obj/**/Protos/*.cs</ExcludeByFile>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="FluentAssertions" />

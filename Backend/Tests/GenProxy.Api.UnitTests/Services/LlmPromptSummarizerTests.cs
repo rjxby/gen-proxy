@@ -3,6 +3,7 @@ using GenProxy.Api.Integrations.Contracts;
 using GenProxy.Api.Integrations.Contracts.Models;
 using GenProxy.Api.Integrations.Contracts.Configuration;
 using GenProxy.Api.Services.Contracts;
+using GenProxy.Api.Services.Contracts.Models;
 using GenProxy.Api.Services.Implementation.Configuration;
 using GenProxy.Api.Services.Implementation.Services;
 using Microsoft.Extensions.Options;
@@ -60,6 +61,56 @@ public class LlmPromptSummarizerTests
         runtimeClient.Verify(
             client => client.GenerateAsync(It.IsAny<string>(), It.IsAny<string>(), null, It.IsAny<CancellationToken>()),
             Times.Never);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" \t\r\n")]
+    public async Task ReduceAsync_WhenSummaryIsBlank_ReturnsOriginalPrompt(string summary)
+    {
+        var runtimeClient = new Mock<IPromptReducerRuntimeClient>();
+        runtimeClient
+            .Setup(client => client.GenerateAsync(It.IsAny<string>(), It.IsAny<string>(), null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new LlamaGenerationResult("reduce_1", "", summary, null, null));
+
+        var summarizer = new LlmPromptSummarizer(
+            runtimeClient.Object,
+            Options.Create(new PromptReducerRuntimeOptions()),
+            Options.Create(new PromptReductionOptions()));
+
+        var result = await summarizer.ReduceAsync("long prompt", 123, CancellationToken.None);
+
+        result.Prompt.Should().Be("long prompt");
+        result.WasReduced.Should().BeFalse();
+        result.Strategy.Should().Be(PromptReductionStrategy.None);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" \t\r\n")]
+    public async Task ReduceAsync_WhenSummaryIsBlank_PipelineCallsFallbackWithOriginalPrompt(string summary)
+    {
+        var runtimeClient = new Mock<IPromptReducerRuntimeClient>();
+        runtimeClient
+            .Setup(client => client.GenerateAsync(It.IsAny<string>(), It.IsAny<string>(), null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new LlamaGenerationResult("reduce_1", "", summary, null, null));
+        var summarizer = new LlmPromptSummarizer(
+            runtimeClient.Object,
+            Options.Create(new PromptReducerRuntimeOptions()),
+            Options.Create(new PromptReductionOptions()));
+        var fallback = new Mock<IPromptReducer>(MockBehavior.Strict);
+        fallback.SetupGet(reducer => reducer.Order).Returns(200);
+        fallback
+            .Setup(reducer => reducer.ReduceAsync("long prompt", 123, CancellationToken.None))
+            .ReturnsAsync(new PromptReductionResult("prompt", true, PromptReductionStrategy.LeadingTruncation));
+        var pipeline = new PromptReductionPipeline([fallback.Object, summarizer]);
+
+        var result = await pipeline.ReduceAsync("long prompt", 123, CancellationToken.None);
+
+        result.Prompt.Should().Be("prompt");
+        result.WasReduced.Should().BeTrue();
+        result.Strategy.Should().Be(PromptReductionStrategy.LeadingTruncation);
+        fallback.Verify(reducer => reducer.ReduceAsync("long prompt", 123, CancellationToken.None), Times.Once);
     }
 
     [Fact]

@@ -4,6 +4,8 @@ using GenProxy.Api.Host.Validation;
 using Microsoft.AspNetCore.HttpLogging;
 using Microsoft.Extensions.Options;
 using System.Text.Json.Serialization;
+using GenProxy.Api.Integrations.Contracts.Configuration;
+using Microsoft.AspNetCore.Http.Timeouts;
 
 namespace GenProxy.Api.Host.Configurations;
 
@@ -19,6 +21,23 @@ public static class SetupPresentationLayer
 
     public static IServiceCollection AddPresentationLayer(this IServiceCollection services, IConfiguration configuration)
     {
+        services
+            .AddOptions<ResponsesTimeoutOptions>()
+            .Bind(configuration.GetSection(ResponsesTimeoutOptions.SectionName))
+            .Validate(options => RuntimeTimeoutOptions.IsValidTimeout(options.Timeout), "Responses timeout must be greater than zero and no longer than one day.")
+            .ValidateOnStart();
+        services.AddRequestTimeouts();
+        services.AddOptions<RequestTimeoutOptions>()
+            .Configure<IOptions<ResponsesTimeoutOptions>>((options, responsesTimeout) =>
+            {
+                options.AddPolicy(ResponsesTimeoutOptions.PolicyName, new RequestTimeoutPolicy
+                {
+                    Timeout = responsesTimeout.Value.Timeout,
+                    TimeoutStatusCode = StatusCodes.Status504GatewayTimeout,
+                    WriteTimeoutResponse = ResponsesTimeoutResponse.WriteAsync
+                });
+            });
+
         services
             .AddOptions<RequestLimitsOptions>()
             .Bind(configuration.GetSection(RequestLimitsOptions.SectionName))

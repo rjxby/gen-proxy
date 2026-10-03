@@ -1,3 +1,5 @@
+using GenProxy.Api.Integrations.Contracts.Configuration;
+
 namespace GenProxy.Api.Integrations.Implementation.Configuration;
 
 public class GenerationRuntimeOptions
@@ -7,4 +9,6 @@ public class GenerationRuntimeOptions
     public string Address { get; set; } = "https://localhost:50051";
 
     public string? ApiKey { get; set; }
+
+    public RuntimeTimeoutOptions Timeouts { get; set; } = new();
 }

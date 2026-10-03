@@ -2,18 +2,24 @@
 
 Stateless HTTP orchestration layer for token budgeting, prompt reduction, and response generation over `llama-runtime` gRPC backends.
 
+Keep shared repository instructions in this file. Claude Code reads `AGENTS.md` directly from v2.1.277 onward.
+Under its default settings, a project or ancestor `CLAUDE.md`, `.claude/CLAUDE.md`, or `CLAUDE.local.md` prevents that fallback.
+See [Claude Code instruction loading](https://code.claude.com/docs/en/memory#agentsmd) if this file does not load.
+
 ## Commands
 
+- Restore dependencies before using `--no-restore`: `dotnet restore Backend/GenProxy.sln`
+- Build the solution: `dotnet build Backend/GenProxy.sln -c Release --no-restore`
 - Run the API against already running runtimes: `make run`
 - Start the full local stack: `make stack-run`
 - Send a demo request to a running stack: `make demo`
 - Run basic local smoke checks: `make smoke`
 - Run constrained-budget smoke checks: `make smoke-budget`
-- Run all managed tests: `dotnet test Backend/GenProxy.sln --no-restore`
+- Run API unit and integration tests: `dotnet test Backend/GenProxy.sln --no-restore`
 - Run unit tests only: `dotnet test Backend/Tests/GenProxy.Api.UnitTests/GenProxy.Api.UnitTests.csproj --no-restore`
 - Run integration tests only: `dotnet test Backend/Tests/GenProxy.Api.IntegrationTests/GenProxy.Api.IntegrationTests.csproj --no-restore`
 
-## Project Structure
+## Project structure
 
 - `Backend/Api/Host/`: HTTP edge, endpoint mapping, validation, auth, rate limiting, middleware, OpenAPI, and composition root setup.
 - `Backend/Api/Services/Contracts/`: service abstractions, response generation contracts, prompt reduction contracts, and service-level exceptions.
@@ -37,8 +43,9 @@ Stateless HTTP orchestration layer for token budgeting, prompt reduction, and re
 - If prompt reduction still does not fit the runtime budget after re-estimation, the request fails with `422`.
 - `response_format.type=json_schema` depends on runtime capability discovery and must be validated against runtime trace and parsed JSON object output.
 
-## Change Guidance
+## Change guidance
 
+- Read `docs/architecture.md` before changing layer contracts. Check `README.md` for public API behavior and configuration; `docs/roadmap.md` separates implemented behavior from planned work.
 - Preserve layer boundaries: Host handles HTTP concerns, Services orchestrate domain behavior, Integrations adapt gRPC runtimes.
 - Prefer existing options binding and environment-variable naming patterns over new configuration paths.
 - Keep setup modules under `Backend/Api/Host/Configurations` as composition-root wiring, not business logic.
@@ -46,4 +53,20 @@ Stateless HTTP orchestration layer for token budgeting, prompt reduction, and re
 - Keep prompt and generated-text payloads out of normal structured logs.
 - Add or update xUnit tests for behavior changes.
 - Treat `GenProxy.StackRunner` as local smoke infrastructure, not a replacement for focused unit and integration coverage.
-- The local stack workflow is pinned to `llama-runtime v0.6.0` unless `LLAMA_RUNTIME_VERSION` is set explicitly.
+- Keep local tooling outside `Backend/GenProxy.sln`. API projects and API tests must not reference tooling projects.
+- The local stack workflow is pinned to `llama-runtime v0.7.0` unless `LLAMA_RUNTIME_VERSION` is set explicitly.
+
+## Verification and local runs
+
+- Use .NET 10, matching the projects and CI.
+- During development, run the affected xUnit tests with `dotnet test <test-project> --no-restore --filter FullyQualifiedName~<test-class-or-method>`.
+- For code changes, finish with the Release build above and `dotnet test Backend/GenProxy.sln -c Release --no-build`. Repeat checks when further edits or failures require them.
+- For documentation-only changes, check links, referenced commands, and `git diff --check`.
+- Run smoke checks when changing runtime compatibility, stack startup, or behavior that needs real inference. Check model paths and available ports first.
+- Before starting a stack, check `.runtime-run/*.pid`. Startup stops processes recorded there, so use a separate checkout for a parallel stack, with distinct `GENERATION_RUNTIME_PORT`, `SUMMARIZER_RUNTIME_PORT`, and `GEN_PROXY_BASE_URL` values. Stop only processes started for the task, using tracked PIDs.
+
+## Documentation
+
+- Explain non-obvious constraints and decisions in comments. Let names and code explain ordinary control flow; let test names and assertions explain test intent.
+- Keep detailed contracts in their existing docs and link to them. Update public API examples and configuration notes when behavior changes.
+- Report which checks ran and any checks that remain unverified.

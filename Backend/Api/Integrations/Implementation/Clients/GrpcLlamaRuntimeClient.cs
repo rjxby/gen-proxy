@@ -1,4 +1,5 @@
 using GenProxy.Api.Integrations.Contracts;
+using GenProxy.Api.Integrations.Contracts.Configuration;
 using GenProxy.Api.Integrations.Contracts.Models;
 using Grpc.Core;
 using LlamaRuntime.Presentation.Grpc;
@@ -18,8 +19,8 @@ public sealed class GrpcLlamaRuntimeClient : ILlamaRuntimeClient
     private readonly string _runtimeName;
     private readonly ILogger<GrpcLlamaRuntimeClient> _logger;
 
-    public GrpcLlamaRuntimeClient(string runtimeName, string address, ILogger<GrpcLlamaRuntimeClient> logger, string? apiKey = null)
-        : this(runtimeName, logger, new GrpcLlamaTransport(address, apiKey))
+    public GrpcLlamaRuntimeClient(string runtimeName, string address, ILogger<GrpcLlamaRuntimeClient> logger, string? apiKey = null, RuntimeTimeoutOptions? timeouts = null)
+        : this(runtimeName, logger, new GrpcLlamaTransport(address, apiKey, timeouts))
     {
     }
 
@@ -59,7 +60,7 @@ public sealed class GrpcLlamaRuntimeClient : ILlamaRuntimeClient
         catch (RpcException exception)
         {
             stopwatch.Stop();
-            throw HandleRpcException("estimate tokens", exception, TryCreatePromptBudgetExceededException);
+            throw HandleRpcException("estimate tokens", exception, cancellationToken, TryCreatePromptBudgetExceededException);
         }
         catch (HttpRequestException exception)
         {
@@ -103,7 +104,7 @@ public sealed class GrpcLlamaRuntimeClient : ILlamaRuntimeClient
         catch (RpcException exception)
         {
             stopwatch.Stop();
-            throw HandleRpcException("get capabilities", exception);
+            throw HandleRpcException("get capabilities", exception, cancellationToken);
         }
         catch (HttpRequestException exception)
         {
@@ -202,6 +203,7 @@ public sealed class GrpcLlamaRuntimeClient : ILlamaRuntimeClient
             throw HandleRpcException(
                 "generate",
                 exception,
+                cancellationToken,
                 TryCreatePromptBudgetExceededException,
                 TryCreateUnsupportedGenerationOverridesException,
                 TryCreateInvalidArgumentException,
@@ -231,9 +233,21 @@ public sealed class GrpcLlamaRuntimeClient : ILlamaRuntimeClient
     private Exception HandleRpcException(
         string operation,
         RpcException exception,
+        CancellationToken cancellationToken,
         params Func<RpcException, Exception?>[] translators)
     {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return new OperationCanceledException("The runtime call was canceled by the caller.", exception, cancellationToken);
+        }
+
         RecordUpstreamFailure();
+
+        if (exception.StatusCode == StatusCode.DeadlineExceeded)
+        {
+            _logger.LogWarning("Upstream runtime call timed out. Runtime={Runtime} Operation={Operation}", _runtimeName, operation);
+            return new LlamaRuntimeTimeoutException($"Timed out while attempting to {operation} against the {_runtimeName} runtime.", exception);
+        }
 
         foreach (var translator in translators)
         {

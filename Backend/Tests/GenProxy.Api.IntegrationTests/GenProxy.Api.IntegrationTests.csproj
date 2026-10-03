@@ -7,6 +7,7 @@
     <IsTestProject>true</IsTestProject>
     <CoverageEnabled>true</CoverageEnabled>
     <CollectCoverage>true</CollectCoverage>
+    <ExcludeByFile>**/obj/**/Protos/*.cs</ExcludeByFile>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="FluentAssertions" />

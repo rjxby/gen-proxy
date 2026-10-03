@@ -145,6 +145,78 @@ public class ResponseGenerationServiceTests
         await act.Should().ThrowAsync<PromptBudgetExceededException>();
     }
 
+    [Theory]
+    [InlineData("", false, PromptReductionStrategy.None)]
+    [InlineData(" \t\r\n", false, PromptReductionStrategy.None)]
+    [InlineData("", true, PromptReductionStrategy.LlmSummarizer)]
+    [InlineData(" \t\r\n", true, PromptReductionStrategy.LlmSummarizer)]
+    [InlineData("", true, PromptReductionStrategy.LeadingTruncation)]
+    [InlineData(" \t\r\n", true, PromptReductionStrategy.LeadingTruncation)]
+    public async Task GenerateAsync_WhenReducedPromptIsBlank_RejectsItEvenIfEstimationWouldFit(
+        string reducedPrompt,
+        bool wasReduced,
+        PromptReductionStrategy strategy)
+    {
+        var command = new ResponseCreateCommand("stories15m", "too long", null, null, null, null, null, null);
+        _generationRuntimeClient
+            .Setup(client => client.EstimateTokensAsync(command.Input, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TokenEstimation(9000, 8192, 512, 7680, false));
+        _generationRuntimeClient
+            .Setup(client => client.EstimateTokensAsync(reducedPrompt, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TokenEstimation(0, 8192, 512, 7680, true));
+        _promptReductionPipeline
+            .Setup(pipeline => pipeline.ReduceAsync(command.Input, 7680, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new PromptReductionResult(reducedPrompt, wasReduced, strategy));
+
+        var act = async () => await _service.GenerateAsync(command, CancellationToken.None);
+
+        await act.Should().ThrowAsync<PromptBudgetExceededException>()
+            .WithMessage("Prompt exceeds token budget after prompt reduction because no non-whitespace input remains.");
+        _generationRuntimeClient.Verify(
+            client => client.EstimateTokensAsync(reducedPrompt, It.IsAny<CancellationToken>()),
+            Times.Never);
+        _generationRuntimeClient.Verify(
+            client => client.GenerateAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<LlamaGenerationOptions?>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Theory]
+    [InlineData("text", "", 0)]
+    [InlineData("text \t\r\n", " \t\r\n", 4)]
+    public async Task GenerateAsync_WhenTruncationRemovesAllNonWhitespaceInput_ThrowsPromptBudgetExceededException(
+        string prompt,
+        string truncatedPrompt,
+        int maxAllowedInputTokens)
+    {
+        var command = new ResponseCreateCommand("stories15m", prompt, null, null, null, null, null, null);
+        _generationRuntimeClient
+            .Setup(client => client.EstimateTokensAsync(prompt, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TokenEstimation(prompt.Length, 100, 0, maxAllowedInputTokens, false));
+        _generationRuntimeClient
+            .Setup(client => client.EstimateTokensAsync(truncatedPrompt, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TokenEstimation(0, 100, 0, maxAllowedInputTokens, true));
+        var pipeline = new PromptReductionPipeline([new LeadingPromptTruncator(_generationRuntimeClient.Object)]);
+        var service = new ResponseGenerationService(
+            _generationRuntimeClient.Object,
+            pipeline,
+            NullLogger<ResponseGenerationService>.Instance);
+
+        var act = async () => await service.GenerateAsync(command, CancellationToken.None);
+
+        await act.Should().ThrowAsync<PromptBudgetExceededException>();
+        _generationRuntimeClient.Verify(
+            client => client.GenerateAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<LlamaGenerationOptions?>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
     [Fact]
     public async Task GenerateAsync_WhenJsonSchemaRequestedAndRuntimeDoesNotSupportIt_ThrowsResponseFormatNotSupportedException()
     {

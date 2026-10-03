@@ -18,7 +18,7 @@ PromptReducerRuntime__Address=https://localhost:50052 \
 
 Defaults for request limits, runtime addresses, and prompt-reduction behavior are compiled into the binary. Outside Development, you still need to supply at least one API key through environment variables or another standard ASP.NET Core configuration source.
 
-Compatibility note: the current local stack workflow is pinned to `llama-runtime v0.6.0`.
+Compatibility note: the current local stack workflow is pinned to `llama-runtime v0.7.0`.
 
 By default, `gen-proxy` does not log request or response bodies in ASP.NET Core HTTP logs. If you set `ResponsesLogging:LogBodies=true`, `gen-proxy` will include request and response bodies in HTTP logs globally.
 
@@ -82,7 +82,7 @@ Current behavior:
 - Top-level string input is not supported.
 - Multi-turn structured input and non-user structured roles are rejected in this stage.
 - `response_format.type` is optional and supports `text` and `json_schema`.
-- `json_schema` requests use the OpenAI-compatible nested `json_schema` object and are sent to `llama-runtime v0.6.0` as runtime response format `json` plus the raw schema payload.
+- `json_schema` requests use the OpenAI-compatible nested `json_schema` object and are sent to `llama-runtime v0.7.0` as runtime response format `json` plus the raw schema payload.
 - `json_schema` requests are rejected with `400` if the configured generation runtime does not advertise structured JSON output support through `GetCapabilities`.
 - `json_schema` requests are rejected with `502` unless the runtime reports that structured output was applied and satisfied, and the returned content is a valid JSON object.
 - The runtime supports a strict JSON Schema subset and remains the source of truth for schema-subset validation.
@@ -149,6 +149,12 @@ The host supports separate runtime settings for generation and an optional promp
 Optional prompt-reduction prompt text can be configured in `PromptReduction:SummarizationPromptTemplate`.
 Runtime addresses must use `https://`.
 
+Each runtime has independent operation timeouts under `GenerationRuntime:Timeouts` or `PromptReducerRuntime:Timeouts`. `EstimateTokens` and `GetCapabilities` default to `00:00:10`; `Generate` defaults to `00:02:00`. The overall Responses request limit, `ResponsesTimeout:Timeout`, defaults to `00:03:00` and covers the full sequence of capability discovery, estimation, reduction, and generation. All timeouts must be positive and no longer than one day.
+
+Runtime deadlines and the overall request timeout return `504` problem responses with a `trace_id`. Client disconnects cancel active upstream work. ASP.NET Core disables the overall timeout while a debugger is attached; gRPC deadlines still apply.
+
+Environment overrides include `GenerationRuntime__Timeouts__Generate=00:02:00` and `ResponsesTimeout__Timeout=00:03:00`.
+
 Example:
 
 ```json
@@ -176,6 +182,10 @@ Example:
 - Setup modules remain under `Backend/Api/Host/Configurations` and represent composition-root wiring, not service/domain logic.
 - Prompt reducers must declare explicit execution order through `IPromptReducer.Order`. Lower values run first, and the current pipeline stops at the first reducer that reports a reduction. If the reduced prompt still exceeds budget after re-estimation, the request fails with `422` rather than continuing to later reducers.
 - Unit and integration tests are CI-grade checks. `GenProxy.StackRunner` provides local smoke verification modes and should not replace layer-focused automated tests.
+
+`Backend/GenProxy.sln` contains the API and its unit and integration tests. The local stack runner is built separately when running `make stack-run`, `make smoke`, or `make smoke-budget`. API builds and tests have no dependency on the tool.
+
+A blank summary leaves the original prompt available for truncation fallback. If reduction cannot retain any non-whitespace input, the proxy returns `422` instead of sending an empty prompt to generation.
 
 ## Local Development
 
@@ -225,7 +235,7 @@ make stack-run
 ```
 
 `make stack-run` will:
-- download and use `llama-runtime v0.6.0` by default unless `LLAMA_RUNTIME_VERSION` is set explicitly
+- download and use `llama-runtime v0.7.0` by default unless `LLAMA_RUNTIME_VERSION` is set explicitly
 - cache release artifacts in `.runtime-cache/`
 - write runtime logs to `.runtime-logs/`
 - write PID files and runtime state to `.runtime-run/`
@@ -237,6 +247,8 @@ make stack-run
 - fail if a runtime does not stay healthy for a short post-start window
 - start `gen-proxy` locally over HTTPS with `dotnet run`
 - stop the API and both managed runtimes when `stack-run` exits, is interrupted, or startup fails
+
+Files in `.runtime-run/` with a `.pid` extension now contain JSON with the process ID, UTC start time, and executable path. Before stopping a process, the runner verifies all three fields. It discards legacy PID-only files and invalid or mismatched records without stopping the referenced process. If a stack from an older version remains running after an interrupted session, stop those processes manually before restarting.
 
 The managed API now runs on `https://localhost:7001` by default.
 
@@ -345,7 +357,7 @@ MAIN_MODEL_PATH=/absolute/path/to/main-model.gguf \
 MAIN_MODEL_ID=main-local-model \
 SUMMARIZER_MODEL_PATH=/absolute/path/to/summarizer-model.gguf \
 SUMMARIZER_MODEL_ID=summarizer-local-model \
-LLAMA_RUNTIME_VERSION=v0.6.0 \
+LLAMA_RUNTIME_VERSION=v0.7.0 \
 LLAMA_RUNTIME_API_KEY=runtime-local-key \
 GEN_PROXY_BASE_URL=https://localhost:7001 \
 MAIN_WORKER_COUNT=4 \
@@ -354,7 +366,7 @@ API_STARTUP_TIMEOUT=60 \
 make stack-run
 ```
 
-Set `LLAMA_RUNTIME_VERSION` only when you intentionally want to override the stack runner default. Releases in this line are validated against `v0.6.0`.
+Set `LLAMA_RUNTIME_VERSION` only when you intentionally want to override the stack runner default. Releases in this line are validated against `v0.7.0`.
 
 Optional smoke overrides:
 

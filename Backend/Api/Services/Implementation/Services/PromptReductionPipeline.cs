@@ -11,13 +11,16 @@ public sealed class PromptReductionPipeline(IEnumerable<IPromptReducer> reducers
 
     public async Task<PromptReductionResult> ReduceAsync(string prompt, int maxAllowedInputTokens, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var currentPrompt = prompt;
         var wasReduced = false;
         var strategy = PromptReductionStrategy.None;
 
         foreach (var reducer in _reducers)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var result = await reducer.ReduceAsync(currentPrompt, maxAllowedInputTokens, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             currentPrompt = result.Prompt;
 
             if (!result.WasReduced)
