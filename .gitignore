@@ -58,3 +58,8 @@ msbuild.wrn
 coverage.json
 
 /models/
+
+# Quality reports
+TestResults/
+__pycache__/
+.e2e-results/

@@ -6,6 +6,9 @@ using GenProxy.Api.Host;
 using GenProxy.Api.Host.Endpoints;
 using GenProxy.Api.Integrations.Contracts;
 using GenProxy.Api.Integrations.Contracts.Models;
+using GenProxy.Api.Integrations.Implementation.Clients;
+using Grpc.Core;
+using LlamaRuntime.Presentation.Grpc;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
@@ -17,6 +20,7 @@ using Microsoft.Extensions.DependencyInjection;
 using GenProxy.Api.Host.Security;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using GenProxy.Api.Services.Contracts.Models;
 using Xunit;
 
@@ -781,6 +785,50 @@ public class ResponsesEndpointTests
         problem.Detail.Should().Be("Inference did not return a valid JSON object.");
     }
 
+    [Theory]
+    [InlineData(StatusCode.Internal, "Generated output did not match the requested JSON schema.", HttpStatusCode.BadGateway)]
+    [InlineData(StatusCode.Internal, "Structured output generation returned empty content.", HttpStatusCode.BadGateway)]
+    [InlineData(StatusCode.Unavailable, "Structured output generation returned empty content.", HttpStatusCode.ServiceUnavailable)]
+    public async Task PostResponses_WhenGrpcRuntimeReportsTypedStructuredOutputFailure_ReturnsMappedProblem(
+        StatusCode runtimeStatusCode,
+        string detail,
+        HttpStatusCode expectedStatusCode)
+    {
+        var rpcException = new RpcException(new Status(runtimeStatusCode, detail), new Metadata
+        {
+            { "runtime-error-code", "structured_output_failed" }
+        });
+        var transport = new StructuredOutputFailureTransport(rpcException);
+        var runtimeClient = new GrpcLlamaRuntimeClient("generation", NullLogger<GrpcLlamaRuntimeClient>.Instance, transport);
+        await using var factory = CreateFactory(
+            new GenerationRuntimeClient(runtimeClient),
+            new FakePromptReducerRuntimeClient());
+
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(Constants.Auth.ApiKeyHeaderName, "test-api-key");
+
+        using var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "stories15m",
+            input = StructuredInput("return valid json"),
+            response_format = JsonSchemaResponseFormat()
+        });
+
+        response.StatusCode.Should().Be(expectedStatusCode);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+        problem.Should().NotBeNull();
+        problem!.Status.Should().Be((int)expectedStatusCode);
+        if (expectedStatusCode == HttpStatusCode.BadGateway)
+        {
+            problem.Title.Should().Be("Structured output requirement not satisfied.");
+            problem.Detail.Should().Be(detail);
+        }
+        else
+        {
+            problem.Title.Should().Be("Upstream runtime unavailable.");
+        }
+    }
+
     [Fact]
     public async Task PostResponses_WithoutApiKey_ReturnsUnauthorized()
     {
@@ -1338,6 +1386,37 @@ public class ResponsesEndpointTests
     {
         return segment.Replace("~1", "/", StringComparison.Ordinal)
             .Replace("~0", "~", StringComparison.Ordinal);
+    }
+
+    private sealed class StructuredOutputFailureTransport(RpcException generateException) : IGrpcLlamaTransport
+    {
+        public Task<EstimateTokensReply> EstimateTokensAsync(EstimateTokensRequest request, CancellationToken cancellationToken)
+        {
+            return Task.FromResult(new EstimateTokensReply
+            {
+                TokenCount = 42,
+                ContextSize = 8192,
+                ReservedOutputTokens = 512,
+                MaxAllowedInputTokens = 7680,
+                Fits = true
+            });
+        }
+
+        public Task<GetCapabilitiesReply> GetCapabilitiesAsync(GetCapabilitiesRequest request, CancellationToken cancellationToken)
+        {
+            return Task.FromResult(new GetCapabilitiesReply
+            {
+                ModelId = "runtime-model",
+                ContextSize = 8192,
+                SupportsStructuredOutput = true,
+                SupportsJsonOutput = true
+            });
+        }
+
+        public Task<GenerateReply> GenerateAsync(GenerateRequest request, CancellationToken cancellationToken)
+        {
+            return Task.FromException<GenerateReply>(generateException);
+        }
     }
 
     private sealed class FakeGenerationRuntimeClient(

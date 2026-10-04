@@ -98,14 +98,11 @@ public class ResponseGenerationService(
                 generation.RequestId,
                 string.IsNullOrWhiteSpace(generation.Model) ? command.Model : generation.Model,
                 generation.Content,
-                effectivePrompt,
                 wasReduced,
                 reductionStrategy,
                 generation.Usage?.InputTokens ?? estimation.TokenCount,
                 generation.Usage?.OutputTokens,
                 generation.Usage?.TotalTokens,
-                estimation.ContextSize,
-                estimation.ReservedOutputTokens,
                 estimation.MaxAllowedInputTokens,
                 DateTimeOffset.UtcNow);
 

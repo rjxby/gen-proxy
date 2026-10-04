@@ -292,7 +292,10 @@ public class RuntimeTimeoutBoundaryTests
 
         public async ValueTask DisposeAsync()
         {
-            foreach (var channel in _channels) channel.Dispose();
+            foreach (var channel in _channels)
+            {
+                channel.Dispose();
+            }
             using var shutdown = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await app.StopAsync(shutdown.Token);
             await app.DisposeAsync();

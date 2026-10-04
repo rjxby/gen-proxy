@@ -1,10 +1,10 @@
 # Gen Proxy
 
-HTTP reverse proxy for token budgeting and response generation over [`llama-runtime`](https://github.com/rjxby/llama-runtime) gRPC backends.
+Stateless HTTP orchestration layer for token budgeting, prompt reduction, and response generation over [`llama-runtime`](https://github.com/rjxby/llama-runtime) gRPC backends.
 
 ## Releases
 
-GitHub releases now ship a single macOS ARM64 executable named `gen-proxy-osx-arm64`. Docker is not part of CI or release packaging.
+GitHub releases ship a single macOS ARM64 executable named `gen-proxy-osx-arm64`.
 
 Download the binary from the latest release, make it executable, and provide runtime settings with environment variables:
 
@@ -18,14 +18,12 @@ PromptReducerRuntime__Address=https://localhost:50052 \
 
 Defaults for request limits, runtime addresses, and prompt-reduction behavior are compiled into the binary. Outside Development, you still need to supply at least one API key through environment variables or another standard ASP.NET Core configuration source.
 
-Compatibility note: the current local stack workflow is pinned to `llama-runtime v0.7.0`.
-
-By default, `gen-proxy` does not log request or response bodies in ASP.NET Core HTTP logs. If you set `ResponsesLogging:LogBodies=true`, `gen-proxy` will include request and response bodies in HTTP logs globally.
+Compatibility note: the current local stack workflow is pinned to `llama-runtime v0.7.1`.
 
 ## Documentation
 
-- [docs/architecture.md](docs/architecture.md) - current layer boundaries, request lifecycle, runtime contract, and local stack behavior.
-- [docs/roadmap.md](docs/roadmap.md) - implemented baseline and planned routing, telemetry, model profile, and operational work.
+- [Architecture](docs/architecture.md) covers the system diagram, layer boundaries, request lifecycle, runtime contract, and local stack internals.
+- [Backlog](docs/backlog.md) tracks planned work with priorities, dependencies, and acceptance criteria, separate from the implemented baseline.
 
 ## Authentication
 
@@ -36,6 +34,7 @@ X-API-Key: your-api-key
 ```
 
 Supported behavior:
+
 - `X-API-Key` is the only accepted API key header.
 - `Authorization` is not supported.
 - `Bearer` prefixes are not supported.
@@ -75,20 +74,21 @@ Request body:
 ```
 
 Current behavior:
+
 - `model` is required.
-- `model` is echoed back in the response and used for logs/metrics, but it does not currently select or route between different upstream runtimes.
+- `model` does not select a runtime. The response uses the runtime's model name when available and falls back to the requested value.
 - `input` is required and supports exactly one structured user message item.
 - The input message must use `type: "message"`, `role: "user"`, and one or more `input_text` content parts.
 - Top-level string input is not supported.
 - Multi-turn structured input and non-user structured roles are rejected in this stage.
 - `response_format.type` is optional and supports `text` and `json_schema`.
-- `json_schema` requests use the OpenAI-compatible nested `json_schema` object and are sent to `llama-runtime v0.7.0` as runtime response format `json` plus the raw schema payload.
-- `json_schema` requests are rejected with `400` if the configured generation runtime does not advertise structured JSON output support through `GetCapabilities`.
+- `json_schema` requests use the OpenAI-compatible nested `json_schema` object.
+- `json_schema` requests are rejected with `400` if the configured generation runtime does not support structured JSON output.
 - `json_schema` requests are rejected with `502` unless the runtime reports that structured output was applied and satisfied, and the returned content is a valid JSON object.
 - The runtime supports a strict JSON Schema subset and remains the source of truth for schema-subset validation.
 - Example structured format:
   `{"type":"json_schema","json_schema":{"name":"result","schema":{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"],"additionalProperties":false},"strict":true}}`
-- `temperature`, `top_p`, and `max_output_tokens` are forwarded to the runtime generate call, and support for those fields is runtime-defined.
+- Support for `temperature`, `top_p`, and `max_output_tokens` depends on the configured runtime.
 - In the current local `llama-runtime` stack, request-level generation uses greedy defaults. Non-default `temperature` and `top_p` are rejected.
 - `max_output_tokens` is currently a placeholder compatibility field and is accepted only when it matches the runtime's configured `Llama:Native:GenerationMaxNewTokens` value. The local stack default is `512`.
 - `tools`, `tool_choice`, and `stream=true` are rejected with `400` in this stage.
@@ -127,7 +127,7 @@ Example response:
 }
 ```
 
-## Runtime Configuration
+## Runtime configuration
 
 `gen-proxy` requires one or two reachable [`llama-runtime`](https://github.com/rjxby/llama-runtime) gRPC services behind it.
 
@@ -138,20 +138,20 @@ The host supports separate runtime settings for generation and an optional promp
 - `GenerationRuntime:ApiKey`
   Optional outbound `x-api-key` sent to the generation runtime.
 - `PromptReducerRuntime:Address`
-  Used by the prompt-reduction pipeline to shorten oversized prompts before generation when the reducer runtime is enabled. Ignored when `PromptReducerRuntime:Enabled` is `false`.
+  Runtime for shortening oversized prompts. Ignored when `PromptReducerRuntime:Enabled` is `false`.
 - `PromptReducerRuntime:ApiKey`
   Optional outbound `x-api-key` sent to the prompt-reducer runtime. Ignored when `PromptReducerRuntime:Enabled` is `false`.
 - `PromptReducerRuntime:Enabled`
   Boolean toggle for external prompt reduction. When `false`, `gen-proxy` skips the reducer runtime and uses leading truncation as the only reduction strategy.
 - `ResponsesLogging:LogBodies`
-  Boolean toggle for request and response body logging in ASP.NET Core HTTP logs. Default is `false`. When `true`, request and response bodies are written to HTTP logs verbatim.
+  Boolean toggle for request and response body logging in ASP.NET Core HTTP logs. Default is `false`. When `true`, logs can contain prompt and completion text, up to 4096 bytes per body.
 
 Optional prompt-reduction prompt text can be configured in `PromptReduction:SummarizationPromptTemplate`.
-Runtime addresses must use `https://`.
+Enabled runtime addresses must be absolute `https://` URIs.
 
-Each runtime has independent operation timeouts under `GenerationRuntime:Timeouts` or `PromptReducerRuntime:Timeouts`. `EstimateTokens` and `GetCapabilities` default to `00:00:10`; `Generate` defaults to `00:02:00`. The overall Responses request limit, `ResponsesTimeout:Timeout`, defaults to `00:03:00` and covers the full sequence of capability discovery, estimation, reduction, and generation. All timeouts must be positive and no longer than one day.
+Each runtime has independent operation timeouts under `GenerationRuntime:Timeouts` or `PromptReducerRuntime:Timeouts`. `EstimateTokens` and `GetCapabilities` default to `00:00:10`; `Generate` defaults to `00:02:00`. The overall Responses request limit, `ResponsesTimeout:Timeout`, defaults to `00:03:00`. All timeouts must be positive and no longer than one day.
 
-Runtime deadlines and the overall request timeout return `504` problem responses with a `trace_id`. Client disconnects cancel active upstream work. ASP.NET Core disables the overall timeout while a debugger is attached; gRPC deadlines still apply.
+Timeouts return `504` problem responses with a `trace_id`. ASP.NET Core disables the overall timeout while a debugger is attached; runtime operation timeouts still apply.
 
 Environment overrides include `GenerationRuntime__Timeouts__Generate=00:02:00` and `ResponsesTimeout__Timeout=00:03:00`.
 
@@ -168,30 +168,27 @@ Example:
     "Address": "https://localhost:50052",
     "ApiKey": ""
   },
-  "PromptReduction": {
-  },
   "ResponsesLogging": {
     "LogBodies": false
   }
 }
 ```
 
-## Architecture Conventions
+## Local development
 
-- `Backend/Api/Host` is the HTTP edge. Namespaces should mirror the folder layout for `Endpoints`, `Middleware`, `Security`, `Validation`, and `Configurations`.
-- Setup modules remain under `Backend/Api/Host/Configurations` and represent composition-root wiring, not service/domain logic.
-- Prompt reducers must declare explicit execution order through `IPromptReducer.Order`. Lower values run first, and the current pipeline stops at the first reducer that reports a reduction. If the reduced prompt still exceeds budget after re-estimation, the request fails with `422` rather than continuing to later reducers.
-- Unit and integration tests are CI-grade checks. `GenProxy.StackRunner` provides local smoke verification modes and should not replace layer-focused automated tests.
+Use the .NET 10 SDK. Restore, build, and run the API unit and integration tests with:
 
-`Backend/GenProxy.sln` contains the API and its unit and integration tests. The local stack runner is built separately when running `make stack-run`, `make smoke`, or `make smoke-budget`. API builds and tests have no dependency on the tool.
+```bash
+dotnet restore Backend/GenProxy.sln
+dotnet build Backend/GenProxy.sln -c Release --no-restore
+dotnet test Backend/GenProxy.sln -c Release --no-build
+```
 
-A blank summary leaves the original prompt available for truncation fallback. If reduction cannot retain any non-whitespace input, the proxy returns `422` instead of sending an empty prompt to generation.
+For local inference, provide GGUF model files and trust the ASP.NET Core development certificate before running the API or stack:
 
-## Local Development
-
-`gen-proxy` now uses a local-only workflow. The `Makefile` is the entrypoint for both a proxy-only run and a full local stack that starts two `llama-runtime` processes first.
-
-GitHub Actions follows the same Docker-free approach: CI runs restore, build, and tests, while tagged releases build the macOS binary and publish it as a release asset.
+```bash
+dotnet dev-certs https --trust
+```
 
 Copy `.env.example` to `.env`, fill in any overrides you want, and keep `.env` out of git.
 
@@ -218,11 +215,19 @@ SUMMARIZER_MODEL_PATH=/absolute/path/to/summarizer-model.gguf
 SUMMARIZER_MODEL_ID=summarizer-local-model
 ```
 
-Run only `gen-proxy` against already running runtimes:
+Run `gen-proxy` against already running local runtimes:
 
 ```bash
 make run
 ```
+
+`make run` sets the runtime addresses from `GENERATION_RUNTIME_PORT` and `SUMMARIZER_RUNTIME_PORT`, enables the reducer, and uses `LLAMA_RUNTIME_API_KEY` for both runtimes. The key defaults to `runtime-local-key`. To use remote runtimes, separate runtime keys, or disable the reducer, set the [runtime configuration](#runtime-configuration) and run the API directly:
+
+```bash
+dotnet run --launch-profile https --project Backend/Api/Host/GenProxy.Api.Host.csproj
+```
+
+Direct `dotnet run` does not load `.env`; export the settings in your shell first.
 
 Run the full local stack:
 
@@ -234,25 +239,11 @@ SUMMARIZER_MODEL_ID=summarizer-local-model \
 make stack-run
 ```
 
-`make stack-run` will:
-- download and use `llama-runtime v0.7.0` by default unless `LLAMA_RUNTIME_VERSION` is set explicitly
-- cache release artifacts in `.runtime-cache/`
-- write runtime logs to `.runtime-logs/`
-- write PID files and runtime state to `.runtime-run/`
-- supervise the runtimes and API with a dedicated .NET runner instead of a shell script
-- start the generation runtime on `localhost:50051`
-- start the summarizer runtime on `localhost:50052`
-- bind both runtimes on local HTTPS endpoints backed by the ASP.NET Core development certificate
-- stop existing managed processes, including the API and both runtimes, before restarting them
-- fail if a runtime does not stay healthy for a short post-start window
-- start `gen-proxy` locally over HTTPS with `dotnet run`
-- stop the API and both managed runtimes when `stack-run` exits, is interrupted, or startup fails
+The default endpoints are `https://localhost:50051` for generation, `https://localhost:50052` for summarization, and `https://localhost:7001` for the API. The runner stops the stack on exit, interruption, startup failure, or an unexpected runtime exit. See [local stack internals](docs/architecture.md#local-stack) for startup, cache, logs, and process ownership.
 
-Files in `.runtime-run/` with a `.pid` extension now contain JSON with the process ID, UTC start time, and executable path. Before stopping a process, the runner verifies all three fields. It discards legacy PID-only files and invalid or mismatched records without stopping the referenced process. If a stack from an older version remains running after an interrupted session, stop those processes manually before restarting.
+Before starting, check `.runtime-run/*.pid`; startup stops the processes tracked there. Use a separate checkout and distinct `GENERATION_RUNTIME_PORT`, `SUMMARIZER_RUNTIME_PORT`, and `GEN_PROXY_BASE_URL` values for a parallel stack. If processes from an older runner remain active, stop them manually before restarting. See [process ownership](docs/architecture.md#process-ownership) for the PID record format.
 
-The managed API now runs on `https://localhost:7001` by default.
-
-### Manual Demo
+### Manual demo
 
 For the quickest local demo, start the stack in one terminal and send prompts from another.
 
@@ -274,9 +265,12 @@ make demo DEMO_REQUEST_ARGS=--json PROMPT="Return whether the demo is reachable.
 printf 'Summarize this request.\nKeep it to two bullet points.\n' | make demo
 ```
 
-`make demo` is intentionally small. It only wraps the local demo request helper, does not start the stack, does not wait for readiness, and does not replace `make smoke`.
+`make demo` sends a request to an already running stack. Use `make smoke` for automated checks.
+
+The helper passes prompt text literally, including quotes, backticks, dollar signs, and newlines.
 
 It defaults to:
+
 - `GEN_PROXY_BASE_URL=https://localhost:7001`
 - `GEN_PROXY_API_KEY=dev-local-key`
 
@@ -316,15 +310,9 @@ curl --silent --show-error --insecure \
   https://localhost:7001/v1/responses
 ```
 
-`make smoke` and `make smoke-budget` are self-contained for local HTTPS, but they require a trusted ASP.NET Core development certificate because the managed runtimes also start on HTTPS.
+### Smoke checks
 
-If you want to open the local API manually in a browser or use other HTTPS clients against it, install and trust the ASP.NET Core development certificate:
-
-```bash
-dotnet dev-certs https --trust
-```
-
-Do this before running `make run`, `make stack-run`, `make smoke`, or `make smoke-budget`.
+Use `make smoke` for automated live verification, or `make stack-run` followed by `make demo PROMPT="..."` for a manual request. These use the same local settings and runtime cache. No model hashes or separate E2E report are required. See [live verification](docs/quality.md#live-verification).
 
 Run the default self-contained smoke flow:
 
@@ -332,7 +320,7 @@ Run the default self-contained smoke flow:
 make smoke
 ```
 
-`make smoke` starts the managed local stack, waits for the HTTPS API to come up, runs the basic smoke checks including a minimal JSON schema output validation, and then stops the stack automatically.
+`make smoke` starts the managed local stack, waits for the HTTPS API to come up, runs the basic smoke checks including a minimal JSON schema output validation, and then stops the stack automatically. Smoke refuses to replace an active tracked stack; use `make demo` against it or a separate checkout with distinct ports.
 
 Run the constrained-budget smoke flow:
 
@@ -340,7 +328,7 @@ Run the constrained-budget smoke flow:
 make smoke-budget
 ```
 
-`make smoke-budget` starts the managed local stack with a smaller generation context, waits for the HTTPS API to come up, runs the normal smoke checks plus an oversized-prompt `422` check, and then stops the stack automatically.
+`make smoke-budget` starts the managed local stack with a smaller generation context, runs the oversized-prompt `422` check, and stops the stack automatically. It runs only the budget scenario. Use `smoke all` below to run both suites.
 
 You can also run the stack runner directly:
 
@@ -350,14 +338,14 @@ dotnet run --project Backend/Tools/GenProxy.StackRunner/GenProxy.StackRunner.csp
 dotnet run --project Backend/Tools/GenProxy.StackRunner/GenProxy.StackRunner.csproj -- smoke all
 ```
 
-Optional overrides:
+### Local overrides
 
 ```bash
 MAIN_MODEL_PATH=/absolute/path/to/main-model.gguf \
 MAIN_MODEL_ID=main-local-model \
 SUMMARIZER_MODEL_PATH=/absolute/path/to/summarizer-model.gguf \
 SUMMARIZER_MODEL_ID=summarizer-local-model \
-LLAMA_RUNTIME_VERSION=v0.7.0 \
+LLAMA_RUNTIME_VERSION=v0.7.1 \
 LLAMA_RUNTIME_API_KEY=runtime-local-key \
 GEN_PROXY_BASE_URL=https://localhost:7001 \
 MAIN_WORKER_COUNT=4 \
@@ -366,7 +354,7 @@ API_STARTUP_TIMEOUT=60 \
 make stack-run
 ```
 
-Set `LLAMA_RUNTIME_VERSION` only when you intentionally want to override the stack runner default. Releases in this line are validated against `v0.7.0`.
+Set `LLAMA_RUNTIME_VERSION` only when you intentionally want to override the stack runner default. The default is `v0.7.1`. Run the [smoke checks](docs/quality.md#live-verification) to verify an override with your local models.
 
 Optional smoke overrides:
 
@@ -380,3 +368,9 @@ make smoke
 ```
 
 For `make smoke-budget`, the stack runner constrains the main generation runtime while keeping the summarizer runtime on a larger context window so oversized prompts exercise the expected `422` path instead of reaching final generation.
+
+## Agent quality checks
+
+Use `make verify-fast` while editing and `make verify` before finishing a code change. The fast command selects affected tests and falls back to the full suites for shared or unknown changes. Neither command starts inference servers. Both reject zero discovered tests.
+
+See [quality checks](docs/quality.md) for fixture review, live smoke checks, and agent reporting rules. Prompt-reduction evals are deferred to [GP-014](docs/backlog.md#gp-014-prompt-reduction-evals).

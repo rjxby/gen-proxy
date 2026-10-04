@@ -14,12 +14,13 @@ internal interface IGrpcLlamaTransport
     Task<GenerateReply> GenerateAsync(GenerateRequest request, CancellationToken cancellationToken);
 }
 
-internal sealed class GrpcLlamaTransport : IGrpcLlamaTransport
+internal sealed class GrpcLlamaTransport : IGrpcLlamaTransport, IDisposable
 {
     internal const string ApiKeyHeaderName = "x-api-key";
 
     private readonly Generator.GeneratorClient _client;
     private readonly RuntimeTimeoutOptions _timeouts;
+    private GrpcChannel? _ownedChannel;
 
     public GrpcLlamaTransport(string address, string? apiKey, RuntimeTimeoutOptions? timeouts = null)
     {
@@ -27,16 +28,17 @@ internal sealed class GrpcLlamaTransport : IGrpcLlamaTransport
         ValidateTimeouts(_timeouts);
         var httpClient = CreateHttpClient(address, apiKey);
 
-        var channel = httpClient is null
-            ? GrpcChannel.ForAddress(address)
-            : GrpcChannel.ForAddress(
-                address,
-                new GrpcChannelOptions
-                {
-                    HttpClient = httpClient
-                });
-
-        _client = new Generator.GeneratorClient(channel);
+        var channel = CreateChannel(address, httpClient);
+        try
+        {
+            _client = new Generator.GeneratorClient(channel);
+            _ownedChannel = channel;
+        }
+        catch
+        {
+            channel.Dispose();
+            throw;
+        }
     }
 
     internal GrpcLlamaTransport(Generator.GeneratorClient client, RuntimeTimeoutOptions timeouts)
@@ -44,6 +46,28 @@ internal sealed class GrpcLlamaTransport : IGrpcLlamaTransport
         ValidateTimeouts(timeouts);
         _client = client;
         _timeouts = timeouts;
+    }
+
+    public void Dispose() => Interlocked.Exchange(ref _ownedChannel, null)?.Dispose();
+
+    // Ownership of a supplied HTTP client transfers to the channel, including construction failures.
+    internal static GrpcChannel CreateChannel(string address, HttpClient? httpClient)
+    {
+        try
+        {
+            return httpClient is null
+                ? GrpcChannel.ForAddress(address)
+                : GrpcChannel.ForAddress(address, new GrpcChannelOptions
+                {
+                    HttpClient = httpClient,
+                    DisposeHttpClient = true
+                });
+        }
+        catch
+        {
+            httpClient?.Dispose();
+            throw;
+        }
     }
 
     private static void ValidateTimeouts(RuntimeTimeoutOptions timeouts)
@@ -69,9 +93,16 @@ internal sealed class GrpcLlamaTransport : IGrpcLlamaTransport
             DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrHigher
         };
 
-        httpClient.DefaultRequestHeaders.Add(ApiKeyHeaderName, apiKey);
-
-        return httpClient;
+        try
+        {
+            httpClient.DefaultRequestHeaders.Add(ApiKeyHeaderName, apiKey);
+            return httpClient;
+        }
+        catch
+        {
+            httpClient.Dispose();
+            throw;
+        }
     }
 
     public async Task<EstimateTokensReply> EstimateTokensAsync(EstimateTokensRequest request, CancellationToken cancellationToken)

@@ -22,7 +22,7 @@ public class ExceptionHandlerTests
         problemDetailsService
             .Setup(service => service.TryWriteAsync(It.IsAny<ProblemDetailsContext>()))
             .Callback<ProblemDetailsContext>(context => capturedContext = context)
-            .Returns(ValueTask.FromResult(true));
+            .Returns(() => ValueTask.FromResult(true));
         var handler = new ExceptionHandler(logger, problemDetailsService.Object);
         var httpContext = new DefaultHttpContext();
         var exception = new LlamaRuntimePromptBudgetExceededException("Prompt exceeds input budget: 10 > 9 allowed.");
@@ -47,7 +47,7 @@ public class ExceptionHandlerTests
         var problemDetailsService = new Mock<IProblemDetailsService>();
         problemDetailsService
             .Setup(service => service.TryWriteAsync(It.IsAny<ProblemDetailsContext>()))
-            .Returns(ValueTask.FromResult(true));
+            .Returns(() => ValueTask.FromResult(true));
         var handler = new ExceptionHandler(logger, problemDetailsService.Object);
         var httpContext = new DefaultHttpContext();
         var exception = new LlamaRuntimeCallException("generation runtime offline");
@@ -71,7 +71,7 @@ public class ExceptionHandlerTests
         problemDetailsService
             .Setup(service => service.TryWriteAsync(It.IsAny<ProblemDetailsContext>()))
             .Callback<ProblemDetailsContext>(context => capturedContext = context)
-            .Returns(ValueTask.FromResult(true));
+            .Returns(() => ValueTask.FromResult(true));
         var handler = new ExceptionHandler(logger, problemDetailsService.Object);
         var httpContext = new DefaultHttpContext();
         var exception = new LlamaRuntimeUnsupportedGenerationOverridesException("Request-level generation overrides are not supported by this runtime yet.");
@@ -96,7 +96,7 @@ public class ExceptionHandlerTests
         problemDetailsService
             .Setup(service => service.TryWriteAsync(It.IsAny<ProblemDetailsContext>()))
             .Callback<ProblemDetailsContext>(context => capturedContext = context)
-            .Returns(ValueTask.FromResult(true));
+            .Returns(() => ValueTask.FromResult(true));
         var handler = new ExceptionHandler(logger, problemDetailsService.Object);
         var httpContext = new DefaultHttpContext();
         var exception = new GenProxy.Api.Services.Contracts.ResponseFormatNotSupportedException("json_schema is unavailable.");
@@ -120,7 +120,7 @@ public class ExceptionHandlerTests
         problemDetailsService
             .Setup(service => service.TryWriteAsync(It.IsAny<ProblemDetailsContext>()))
             .Callback<ProblemDetailsContext>(context => capturedContext = context)
-            .Returns(ValueTask.FromResult(true));
+            .Returns(() => ValueTask.FromResult(true));
         var handler = new ExceptionHandler(logger, problemDetailsService.Object);
         var httpContext = new DefaultHttpContext();
         var exception = new LlamaRuntimeInvalidArgumentException("ResponseFormat.JsonSchema must be valid JSON.");
@@ -144,7 +144,7 @@ public class ExceptionHandlerTests
         problemDetailsService
             .Setup(service => service.TryWriteAsync(It.IsAny<ProblemDetailsContext>()))
             .Callback<ProblemDetailsContext>(context => capturedContext = context)
-            .Returns(ValueTask.FromResult(true));
+            .Returns(() => ValueTask.FromResult(true));
         var handler = new ExceptionHandler(logger, problemDetailsService.Object);
         var httpContext = new DefaultHttpContext();
         var exception = new GenProxy.Api.Services.Contracts.StructuredOutputNotSatisfiedException("runtime did not satisfy structured output.");
@@ -168,7 +168,7 @@ public class ExceptionHandlerTests
         problemDetailsService
             .Setup(service => service.TryWriteAsync(It.IsAny<ProblemDetailsContext>()))
             .Callback<ProblemDetailsContext>(context => capturedContext = context)
-            .Returns(ValueTask.FromResult(true));
+            .Returns(() => ValueTask.FromResult(true));
         var handler = new ExceptionHandler(logger, problemDetailsService.Object);
         var httpContext = new DefaultHttpContext();
         var exception = new LlamaRuntimeStructuredOutputNotSatisfiedException("Inference did not return a valid JSON object.");
@@ -193,7 +193,7 @@ public class ExceptionHandlerTests
         problemDetailsService
             .Setup(service => service.TryWriteAsync(It.IsAny<ProblemDetailsContext>()))
             .Callback<ProblemDetailsContext>(context => capturedContext = context)
-            .Returns(ValueTask.FromResult(true));
+            .Returns(() => ValueTask.FromResult(true));
         var handler = new ExceptionHandler(logger, problemDetailsService.Object);
         var httpContext = new DefaultHttpContext();
         httpContext.TraceIdentifier = "http-trace-id";

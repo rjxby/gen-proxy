@@ -71,48 +71,28 @@ internal sealed class SmokeRunner(StackRunnerOptions options) : IDisposable
         foreach (var scenario in CreateScenarios(_options.SmokeSuite, _options.MainModelId))
         {
             ConsoleStyling.Info($">>> Smoke: {scenario.Name}");
-
             using var request = new HttpRequestMessage(HttpMethod.Post, _responsesUri)
             {
                 Content = JsonContent.Create(scenario.Request)
             };
-
             if (scenario.IncludeApiKey)
             {
                 request.Headers.Add("X-API-Key", _options.PublicApiKey);
             }
-
             using var response = await SendAsync(request, cancellationToken);
             var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
-
-            if (response.StatusCode != scenario.ExpectedStatusCode)
+            var error = response.StatusCode != scenario.ExpectedStatusCode
+                ? $"Expected HTTP {(int)scenario.ExpectedStatusCode}, got {(int)response.StatusCode}."
+                : ValidateResponseBody(scenario, responseBody);
+            if (error is not null)
             {
-                ConsoleStyling.Error(
-                    $"Smoke scenario '{scenario.Name}' failed: expected HTTP {(int)scenario.ExpectedStatusCode}, got {(int)response.StatusCode}.");
-
+                ConsoleStyling.Error($"Smoke scenario '{scenario.Name}' failed: {error}");
                 if (!string.IsNullOrWhiteSpace(responseBody))
                 {
-                    ConsoleStyling.Warning("Response body:");
                     ConsoleStyling.Error(Truncate(responseBody, 800));
                 }
-
                 return 1;
             }
-
-            var validationError = ValidateResponseBody(scenario, responseBody);
-            if (validationError is not null)
-            {
-                ConsoleStyling.Error($"Smoke scenario '{scenario.Name}' failed: {validationError}");
-
-                if (!string.IsNullOrWhiteSpace(responseBody))
-                {
-                    ConsoleStyling.Warning("Response body:");
-                    ConsoleStyling.Error(Truncate(responseBody, 800));
-                }
-
-                return 1;
-            }
-
             ConsoleStyling.Success($"PASS {scenario.Name} -> HTTP {(int)response.StatusCode}");
         }
 
@@ -129,7 +109,8 @@ internal sealed class SmokeRunner(StackRunnerOptions options) : IDisposable
             new SmokeScenario(
                 "authorized response generation",
                 CreateRequest(modelId, "smoke ping"),
-                HttpStatusCode.OK),
+                HttpStatusCode.OK,
+                ResponseValidation: SmokeResponseValidation.ResponseEnvelope),
             new SmokeScenario(
                 "json schema response generation",
                 CreateRequest(
@@ -163,12 +144,18 @@ internal sealed class SmokeRunner(StackRunnerOptions options) : IDisposable
         scenario.ResponseValidation switch
         {
             SmokeResponseValidation.None => null,
+            SmokeResponseValidation.ResponseEnvelope => ValidateEnvelope(responseBody),
             SmokeResponseValidation.StructuredJsonOutputText => ValidateStructuredJsonOutputText(responseBody),
             _ => $"Unsupported smoke response validation '{scenario.ResponseValidation}'."
         };
 
     internal static string? ValidateStructuredJsonOutputText(string responseBody)
     {
+        var envelopeError = ValidateEnvelope(responseBody);
+        if (envelopeError is not null)
+        {
+            return envelopeError;
+        }
         try
         {
             using var responseDocument = JsonDocument.Parse(responseBody);
@@ -190,15 +177,66 @@ internal sealed class SmokeRunner(StackRunnerOptions options) : IDisposable
             }
 
             using var outputDocument = JsonDocument.Parse(outputText);
-            return outputDocument.RootElement.ValueKind == JsonValueKind.Object
+            var output = outputDocument.RootElement;
+            return output.ValueKind == JsonValueKind.Object && output.EnumerateObject().Count() == 1 &&
+                output.TryGetProperty("ok", out var ok) && ok.ValueKind is JsonValueKind.True or JsonValueKind.False
                 ? null
-                : "output_text must parse as a JSON object.";
+                : "output_text must contain exactly one boolean property named ok.";
         }
         catch (JsonException)
         {
             return "output_text must parse as a JSON object.";
         }
     }
+
+    internal static string? ValidateEnvelope(string responseBody)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(responseBody);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object || !HasText(root, "id") || !HasText(root, "model") ||
+                !HasValue(root, "object", "response") || !HasValue(root, "status", "completed") ||
+                !root.TryGetProperty("created_at", out var created) || !created.TryGetInt64(out var timestamp) || timestamp <= 0 ||
+                !HasText(root, "output_text"))
+            {
+                return "Response requires identifiers, model, timestamp, completed status, and nonblank output_text.";
+            }
+            if (!root.TryGetProperty("output", out var items) || items.ValueKind != JsonValueKind.Array || items.GetArrayLength() != 1)
+            {
+                return "Response requires one assistant output message.";
+            }
+            var item = items[0];
+            if (item.ValueKind != JsonValueKind.Object || !HasText(item, "id") || !HasValue(item, "type", "message") ||
+                !HasValue(item, "status", "completed") || !HasValue(item, "role", "assistant") ||
+                !item.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array || content.GetArrayLength() != 1 ||
+                content[0].ValueKind != JsonValueKind.Object || !HasValue(content[0], "type", "output_text") ||
+                !HasValue(content[0], "text", root.GetProperty("output_text").GetString()!))
+            {
+                return "Assistant message content must agree with output_text.";
+            }
+            if (!root.TryGetProperty("usage", out var usage) || usage.ValueKind != JsonValueKind.Object ||
+                !usage.TryGetProperty("input_tokens", out var input) || !input.TryGetInt32(out var inputTokens) || inputTokens < 0 ||
+                !OptionalTokenCount(usage, "output_tokens") || !OptionalTokenCount(usage, "total_tokens"))
+            {
+                return "Response requires nonnegative token usage, with nullable output and total counts.";
+            }
+            return null;
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException)
+        {
+            return "Response must be a valid JSON response envelope.";
+        }
+    }
+
+    private static bool HasText(JsonElement element, string name) => element.TryGetProperty(name, out var value) &&
+        value.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(value.GetString());
+
+    private static bool HasValue(JsonElement element, string name, string expected) => element.TryGetProperty(name, out var value) &&
+        value.ValueKind == JsonValueKind.String && value.GetString() == expected;
+
+    private static bool OptionalTokenCount(JsonElement usage, string name) => usage.TryGetProperty(name, out var value) &&
+        (value.ValueKind == JsonValueKind.Null || value.TryGetInt32(out var count) && count >= 0);
 
     private static HttpClient CreateHttpClient(StackRunnerOptions options)
     {
@@ -307,7 +345,8 @@ internal sealed class SmokeRunner(StackRunnerOptions options) : IDisposable
 internal enum SmokeResponseValidation
 {
     None = 0,
-    StructuredJsonOutputText = 1
+    StructuredJsonOutputText = 1,
+    ResponseEnvelope = 2
 }
 
 internal sealed record SmokeScenario(
@@ -324,7 +363,9 @@ internal sealed record SmokeRequestPayload(
     IReadOnlyList<SmokeInputMessagePayload> Input,
     [property: JsonPropertyName("response_format")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    SmokeResponseFormatPayload? ResponseFormat = null);
+    SmokeResponseFormatPayload? ResponseFormat = null,
+    [property: JsonPropertyName("temperature")] double Temperature = 0,
+    [property: JsonPropertyName("top_p")] double TopP = 1);
 
 internal sealed record SmokeResponseFormatPayload(
     [property: JsonPropertyName("type")]

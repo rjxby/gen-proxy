@@ -10,7 +10,7 @@ namespace GenProxy.StackRunner;
 
 internal static class StackRunnerDefaults
 {
-    public const string LlamaRuntimeVersion = "v0.7.0";
+    public const string LlamaRuntimeVersion = "v0.7.1";
     public const string LatestReleaseKeyword = "latest";
 }
 
@@ -50,6 +50,11 @@ internal static class StackRunnerApplication
         {
             return 130;
         }
+        catch (InvalidOperationException exception)
+        {
+            ConsoleStyling.Error(exception.Message);
+            return 1;
+        }
     }
 }
 
@@ -64,6 +69,11 @@ internal sealed class StackRunnerApplicationInstance(StackRunnerOptions options)
 
     public async Task<int> RunAsync(CancellationToken cancellationToken)
     {
+        if (_options.Mode == StackRunnerMode.Smoke)
+        {
+            await EnsureNoTrackedStackAsync(_options.RuntimeRunDir);
+        }
+
         Directory.CreateDirectory(_options.RuntimeCacheDir);
         Directory.CreateDirectory(_options.RuntimeLogDir);
         Directory.CreateDirectory(_options.RuntimeRunDir);
@@ -106,30 +116,44 @@ internal sealed class StackRunnerApplicationInstance(StackRunnerOptions options)
                 runtimeDir,
                 cancellationToken);
 
-            ConsoleStyling.Info($">>> Waiting for main runtime on port {_options.GenerationRuntimePort}");
-            await WaitForRuntimeReadyAsync("main", mainRuntime, _options.GenerationRuntimePort, cancellationToken);
-            ConsoleStyling.Success(">>> main runtime is ready");
-
-            ConsoleStyling.Info($">>> Waiting for summarizer runtime on port {_options.SummarizerRuntimePort}");
-            await WaitForRuntimeReadyAsync("summarizer", summarizerRuntime, _options.SummarizerRuntimePort, cancellationToken);
-            ConsoleStyling.Success(">>> summarizer runtime is ready");
-
-            var apiProcess = await StartApiAsync(cancellationToken);
-            ConsoleStyling.Info(">>> Waiting for gen-proxy API startup");
-            await apiProcess.WaitForStartupAsync(_options.ApiStartupTimeout, cancellationToken);
-            ConsoleStyling.Success(">>> gen-proxy API is ready");
-
-            if (_options.Mode == StackRunnerMode.Smoke)
-            {
-                return await RunSmokeAsync(cancellationToken);
-            }
-
-            return await apiProcess.WaitForExitAsync(cancellationToken);
+            return await ProcessSupervision.RunAsync(
+                [mainRuntime, summarizerRuntime],
+                token => RunStartedStackAsync(mainRuntime, summarizerRuntime, token),
+                cancellationToken);
         }
         finally
         {
             await CleanupAsync();
         }
+    }
+
+    private async Task<int> RunStartedStackAsync(
+        ManagedProcess mainRuntime,
+        ManagedProcess summarizerRuntime,
+        CancellationToken cancellationToken)
+    {
+        ConsoleStyling.Info($">>> Waiting for main runtime on port {_options.GenerationRuntimePort}");
+        await WaitForRuntimeReadyAsync("main", mainRuntime, _options.GenerationRuntimePort, cancellationToken);
+        ConsoleStyling.Success(">>> main runtime is ready");
+
+        ConsoleStyling.Info($">>> Waiting for summarizer runtime on port {_options.SummarizerRuntimePort}");
+        await WaitForRuntimeReadyAsync("summarizer", summarizerRuntime, _options.SummarizerRuntimePort, cancellationToken);
+        ConsoleStyling.Success(">>> summarizer runtime is ready");
+
+        var apiProcess = await StartApiAsync(cancellationToken);
+        ConsoleStyling.Info(">>> Waiting for gen-proxy API startup");
+        await apiProcess.WaitForStartupAsync(_options.ApiStartupTimeout, cancellationToken);
+        ConsoleStyling.Success(">>> gen-proxy API is ready");
+
+        if (_options.Mode == StackRunnerMode.Smoke)
+        {
+            return await ProcessSupervision.RunAsync(
+                [apiProcess],
+                RunSmokeAsync,
+                cancellationToken);
+        }
+
+        return await apiProcess.WaitForExitAsync(cancellationToken);
     }
 
     private async Task<int> RunSmokeAsync(CancellationToken cancellationToken)
@@ -160,12 +184,13 @@ internal sealed class StackRunnerApplicationInstance(StackRunnerOptions options)
         return release.TagName;
     }
 
-    private async Task<string> EnsureRuntimeExtractedAsync(string version, CancellationToken cancellationToken)
+    internal async Task<string> EnsureRuntimeExtractedAsync(string version, CancellationToken cancellationToken)
     {
         var artifactDir = Path.Combine(_options.RuntimeCacheDir, version);
         var artifactPath = Path.Combine(artifactDir, _options.RuntimeArtifactName);
         var extractDir = Path.Combine(artifactDir, _options.PlatformMoniker);
-
+        var runtimeBinaryPath = Path.Combine(extractDir, _options.RuntimeBinaryName);
+        cancellationToken.ThrowIfCancellationRequested();
         if (!File.Exists(artifactPath))
         {
             Directory.CreateDirectory(artifactDir);
@@ -186,7 +211,6 @@ internal sealed class StackRunnerApplicationInstance(StackRunnerOptions options)
             ConsoleStyling.Info($">>> Using cached llama-runtime artifact {artifactPath}");
         }
 
-        var runtimeBinaryPath = Path.Combine(extractDir, _options.RuntimeBinaryName);
         if (!File.Exists(runtimeBinaryPath))
         {
             ConsoleStyling.Info($">>> Extracting {artifactPath}");
@@ -304,32 +328,10 @@ internal sealed class StackRunnerApplicationInstance(StackRunnerOptions options)
 
     private async Task BuildApiAsync(CancellationToken cancellationToken)
     {
-        var startInfo = new ProcessStartInfo
+        var (exitCode, stdout, stderr) = await BuildProcess.RunAsync(
+            _options.RootDir, _options.DotnetProjectPath, cancellationToken);
+        if (exitCode != 0)
         {
-            FileName = "dotnet",
-            WorkingDirectory = _options.RootDir,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true
-        };
-
-        startInfo.ArgumentList.Add("build");
-        startInfo.ArgumentList.Add(_options.DotnetProjectPath);
-        startInfo.ArgumentList.Add("--nologo");
-        startInfo.ArgumentList.Add("--verbosity");
-        startInfo.ArgumentList.Add("quiet");
-
-        using var process = Process.Start(startInfo);
-        if (process is null)
-        {
-            throw new InvalidOperationException("Failed to start API build process.");
-        }
-
-        await process.WaitForExitAsync(cancellationToken);
-        if (process.ExitCode != 0)
-        {
-            var stdout = await process.StandardOutput.ReadToEndAsync(cancellationToken);
-            var stderr = await process.StandardError.ReadToEndAsync(cancellationToken);
             throw new InvalidOperationException(
                 $"Failed to build gen-proxy API.{Environment.NewLine}{stdout}{Environment.NewLine}{stderr}".Trim());
         }
@@ -389,6 +391,32 @@ internal sealed class StackRunnerApplicationInstance(StackRunnerOptions options)
         {
             process.ThrowIfExitedUnexpectedly();
             await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+        }
+    }
+
+    internal static async Task EnsureNoTrackedStackAsync(string directory)
+    {
+        // Check before entering startup cleanup, which owns these PID files.
+        foreach (var path in Directory.Exists(directory) ? Directory.GetFiles(directory, "*.pid", SearchOption.AllDirectories) : [])
+        {
+            var identity = await ProcessIdentityFile.ReadAsync(path);
+            if (identity is null)
+            {
+                throw new InvalidOperationException($"Unverified process record: {path}. Inspect it before running smoke.");
+            }
+
+            try
+            {
+                using var process = Process.GetProcessById(identity.ProcessId);
+                if (!process.HasExited)
+                {
+                    throw new InvalidOperationException("A tracked stack is running. Use make demo, or run smoke in a separate checkout with distinct ports.");
+                }
+            }
+            catch (ArgumentException)
+            {
+                // The recorded process has exited; ordinary startup removes its record.
+            }
         }
     }
 
@@ -638,8 +666,8 @@ internal sealed record StackRunnerOptions(
             SmokeMainContextSize: ReadEnvironmentNullableInt("SMOKE_MAIN_CONTEXT_SIZE"),
             SummarizerContextSize: ReadEnvironmentNullableInt("SUMMARIZER_CONTEXT_SIZE"),
             SmokeSummarizerContextSize: ReadEnvironmentNullableInt("SMOKE_SUMMARIZER_CONTEXT_SIZE"),
-            PlatformMoniker: DetectPlatformMoniker(),
-            RuntimeArtifactName: $"llama-runtime-grpc-{DetectPlatformMoniker()}.tar.gz",
+            PlatformMoniker: GetPlatformMoniker(),
+            RuntimeArtifactName: $"llama-runtime-grpc-{GetPlatformMoniker()}.tar.gz",
             RuntimeBinaryName: "LlamaRuntime.Presentation.Grpc");
 
         return options;
@@ -691,7 +719,7 @@ internal sealed record StackRunnerOptions(
         };
     }
 
-    private static string FindRootDirectory()
+    internal static string FindRootDirectory()
     {
         var current = new DirectoryInfo(Directory.GetCurrentDirectory());
         while (current is not null)
@@ -768,7 +796,7 @@ internal sealed record StackRunnerOptions(
         return int.TryParse(value, out var parsed) ? parsed : null;
     }
 
-    private static string DetectPlatformMoniker()
+    internal static string GetPlatformMoniker()
     {
         if (OperatingSystem.IsMacOS())
         {
@@ -924,6 +952,11 @@ internal sealed class ManagedProcess : IAsyncDisposable
         {
             throw new InvalidOperationException($"{_process.StartInfo.FileName} exited with code {_process.ExitCode}.");
         }
+    }
+
+    public Task WaitForProcessExitAsync(CancellationToken cancellationToken)
+    {
+        return _process.WaitForExitAsync(cancellationToken);
     }
 
     public async Task<int> WaitForExitAsync(CancellationToken cancellationToken)

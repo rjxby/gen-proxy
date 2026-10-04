@@ -32,6 +32,12 @@ public sealed class LeadingPromptTruncator(IGenerationRuntimeClient generationRu
                 1,
                 (int)Math.Ceiling((double)currentPrompt.Length * excessTokens / Math.Max(estimation.TokenCount, 1)));
 
+            // UTF-16 offsets must not leave half a Unicode scalar in the runtime prompt.
+            if (trimAmount < currentPrompt.Length && char.IsSurrogatePair(currentPrompt, trimAmount - 1))
+            {
+                trimAmount++;
+            }
+
             currentPrompt = trimAmount >= currentPrompt.Length
                 ? string.Empty
                 : currentPrompt[trimAmount..];

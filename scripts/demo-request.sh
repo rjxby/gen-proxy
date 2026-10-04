@@ -74,6 +74,8 @@ done
 
 if [[ $# -gt 0 ]]; then
   PROMPT="$*"
+elif [[ -n "${GEN_PROXY_DEMO_PROMPT:-}" ]]; then
+  PROMPT="$GEN_PROXY_DEMO_PROMPT"
 elif [[ ! -t 0 ]]; then
   PROMPT="$(cat)"
 else

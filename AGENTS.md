@@ -28,7 +28,7 @@ See [Claude Code instruction loading](https://code.claude.com/docs/en/memory#age
 - `Backend/Api/Integrations/Implementation/`: `llama-runtime` gRPC transport and client adapters.
 - `Backend/Tests/`: xUnit unit and integration tests.
 - `Backend/Tools/GenProxy.StackRunner/`: local stack supervisor for downloading and running compatible `llama-runtime` releases with the API.
-- `docs/`: architecture notes and product roadmap.
+- `docs/`: architecture notes, project backlog, and quality checks.
 
 ## Invariants
 
@@ -45,7 +45,7 @@ See [Claude Code instruction loading](https://code.claude.com/docs/en/memory#age
 
 ## Change guidance
 
-- Read `docs/architecture.md` before changing layer contracts. Check `README.md` for public API behavior and configuration; `docs/roadmap.md` separates implemented behavior from planned work.
+- Read `docs/architecture.md` before changing layer contracts. Check `README.md` for public API behavior and configuration; `docs/backlog.md` tracks planned work separately from the implemented baseline.
 - Preserve layer boundaries: Host handles HTTP concerns, Services orchestrate domain behavior, Integrations adapt gRPC runtimes.
 - Prefer existing options binding and environment-variable naming patterns over new configuration paths.
 - Keep setup modules under `Backend/Api/Host/Configurations` as composition-root wiring, not business logic.
@@ -54,7 +54,7 @@ See [Claude Code instruction loading](https://code.claude.com/docs/en/memory#age
 - Add or update xUnit tests for behavior changes.
 - Treat `GenProxy.StackRunner` as local smoke infrastructure, not a replacement for focused unit and integration coverage.
 - Keep local tooling outside `Backend/GenProxy.sln`. API projects and API tests must not reference tooling projects.
-- The local stack workflow is pinned to `llama-runtime v0.7.0` unless `LLAMA_RUNTIME_VERSION` is set explicitly.
+- The local stack workflow is pinned to `llama-runtime v0.7.1` unless `LLAMA_RUNTIME_VERSION` is set explicitly.
 
 ## Verification and local runs
 
@@ -70,3 +70,15 @@ See [Claude Code instruction loading](https://code.claude.com/docs/en/memory#age
 - Explain non-obvious constraints and decisions in comments. Let names and code explain ordinary control flow; let test names and assertions explain test intent.
 - Keep detailed contracts in their existing docs and link to them. Update public API examples and configuration notes when behavior changes.
 - Report which checks ran and any checks that remain unverified.
+
+## Quality gates for agents
+
+- Use `make verify-fast` during development and `make verify` before finishing code changes. For committed branch changes, set `VERIFY_BASE=origin/main`. See [quality checks](docs/quality.md) for selection rules and verification prerequisites.
+- Treat zero discovered tests as a failed check. Report exact commands, test counts, failures, and checks blocked by missing prerequisites.
+- For bug fixes, demonstrate a regression test failing before the fix and passing afterward where possible. Report when reproduction is unavailable.
+- Explain changed contract fixtures, skipped tests, analyzer suppressions, weakened assertions, and quality-threshold changes. Never weaken existing checks merely to make a change pass.
+- Use synchronization signals in concurrency tests. Use timeouts to bound hangs, not sleeps to establish ordering.
+- Keep ordinary verification independent of model downloads and running inference. Prompt-reduction evals are deferred to [GP-014](docs/backlog.md#gp-014-prompt-reduction-evals).
+
+- Run `make smoke` for runtime compatibility, stack startup, generation, or structured-output changes, and `make smoke-budget` for budget or prompt-reduction changes. For manual checks, use `make stack-run` and then `make demo PROMPT="..."`; use `DEMO_REQUEST_ARGS=--json` for structured output. See [live verification](docs/quality.md#live-verification).
+- Passing deterministic tests does not establish live inference success. Report exact commands, scenario counts, failures, and blocked checks. A blocked or unrun live check remains unverified. Never stop an existing stack to make verification pass; use `make demo` against it or another checkout with distinct ports.

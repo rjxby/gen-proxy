@@ -3,9 +3,12 @@ using GenProxy.Api.Integrations.Contracts.Models;
 
 namespace GenProxy.Api.Integrations.Implementation.Clients;
 
-public sealed class PromptReducerRuntimeClient(ILlamaRuntimeClient inner) : IPromptReducerRuntimeClient
+public sealed class PromptReducerRuntimeClient(ILlamaRuntimeClient inner, bool ownsInner = false) : IPromptReducerRuntimeClient, IDisposable
 {
     private readonly ILlamaRuntimeClient _inner = inner;
+    private IDisposable? _ownedInner = ownsInner ? inner as IDisposable : null;
+
+    public void Dispose() => Interlocked.Exchange(ref _ownedInner, null)?.Dispose();
 
     public Task<TokenEstimation> EstimateTokensAsync(string prompt, CancellationToken cancellationToken)
         => _inner.EstimateTokensAsync(prompt, cancellationToken);

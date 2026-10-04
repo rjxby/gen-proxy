@@ -26,5 +26,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\Api\Host\GenProxy.Api.Host.csproj" />
+    <!-- Service tests consume this implementation directly. -->
+    <ProjectReference Include="..\..\Api\Services\Implementation\GenProxy.Api.Services.Implementation.csproj" />
   </ItemGroup>
 </Project>

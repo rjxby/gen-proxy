@@ -34,7 +34,7 @@ public static class SetupIntegrationLayer
             var options = serviceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<GenerationRuntimeOptions>>().Value;
             var runtimeClient = CreateGrpcRuntimeClient(serviceProvider, "generation", options.Address, options.ApiKey, options.Timeouts);
 
-            return new GenerationRuntimeClient(runtimeClient);
+            return new GenerationRuntimeClient(runtimeClient, ownsInner: true);
         });
 
         var isPromptReducerRuntimeEnabled = PromptReducerRuntimeConfiguration.IsEnabled(configuration);
@@ -45,7 +45,7 @@ public static class SetupIntegrationLayer
                 var options = serviceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<PromptReducerRuntimeOptions>>().Value;
                 var runtimeClient = CreateGrpcRuntimeClient(serviceProvider, "prompt_reducer", options.Address, options.ApiKey, options.Timeouts);
 
-                return new PromptReducerRuntimeClient(runtimeClient);
+                return new PromptReducerRuntimeClient(runtimeClient, ownsInner: true);
             });
         }
 
