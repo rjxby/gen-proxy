@@ -1,4 +1,5 @@
 using GenProxy.StackRunner;
 
-var exitCode = await StackRunnerApplication.RunAsync(args);
-return exitCode;
+return BuildProcess.IsLauncher(args)
+    ? await BuildProcess.RunLauncherAsync(args)
+    : await StackRunnerApplication.RunAsync(args);

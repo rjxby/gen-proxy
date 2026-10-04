@@ -1,5 +1,6 @@
 using FluentAssertions;
 using GenProxy.Api.Integrations.Contracts.Configuration;
+using GenProxy.Api.Integrations.Contracts;
 using GenProxy.Api.Integrations.Contracts.Models;
 using GenProxy.Api.Integrations.Implementation.Clients;
 using GenProxy.Api.Integrations.Implementation.Configuration;
@@ -12,6 +13,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using System.Diagnostics.Metrics;
 using Xunit;
 
 namespace GenProxy.Api.UnitTests;
@@ -354,7 +356,7 @@ public class GrpcLlamaRuntimeClientTests
     }
 
     [Fact]
-    public async Task GenerateAsync_WhenRuntimeReportsStructuredOutputFailure_ThrowsLlamaRuntimeStructuredOutputNotSatisfiedException()
+    public async Task GenerateAsync_WhenRuntimeReportsLegacyStructuredOutputFailure_ThrowsLlamaRuntimeStructuredOutputNotSatisfiedException()
     {
         var transport = new FakeGrpcTransport
         {
@@ -367,6 +369,49 @@ public class GrpcLlamaRuntimeClientTests
         var exception = await act.Should().ThrowAsync<GenProxy.Api.Integrations.Contracts.LlamaRuntimeStructuredOutputNotSatisfiedException>();
         exception.Which.Message.Should().Be("Inference did not return a valid JSON object.");
         exception.Which.InnerException.Should().BeOfType<RpcException>();
+    }
+
+    [Theory]
+    [InlineData("Generated output did not match the requested JSON schema.")]
+    [InlineData("Structured output generation returned empty content.")]
+    [InlineData("")]
+    public async Task GenerateAsync_WhenRuntimeReportsTypedStructuredOutputFailure_ThrowsLlamaRuntimeStructuredOutputNotSatisfiedException(string detail)
+    {
+        var rpcException = new RpcException(new Status(StatusCode.Internal, detail), new Metadata
+        {
+            { "runtime-error-code", "structured_output_failed" }
+        });
+        var transport = new FakeGrpcTransport { GenerateException = rpcException };
+        var client = new GrpcLlamaRuntimeClient(RuntimeName, NullLogger<GrpcLlamaRuntimeClient>.Instance, transport);
+
+        var act = async () => await client.GenerateAsync("req_123", "prompt", null, CancellationToken.None);
+
+        var exception = await act.Should().ThrowAsync<GenProxy.Api.Integrations.Contracts.LlamaRuntimeStructuredOutputNotSatisfiedException>();
+        exception.Which.Message.Should().Be(detail);
+        exception.Which.InnerException.Should().BeSameAs(rpcException);
+    }
+
+    [Theory]
+    [InlineData(StatusCode.Unavailable, "structured_output_failed", "Inference did not return a valid JSON object.")]
+    [InlineData(StatusCode.InvalidArgument, "structured_output_failed", "Generated output did not match the requested JSON schema.")]
+    [InlineData(StatusCode.Internal, "unknown_error", "Generated output did not match the requested JSON schema.")]
+    [InlineData(StatusCode.Internal, null, "Generated output did not match the requested JSON schema.")]
+    public async Task GenerateAsync_WhenStructuredOutputFailureIsNotRecognized_ThrowsLlamaRuntimeCallException(StatusCode statusCode, string? errorCode, string detail)
+    {
+        var trailers = new Metadata();
+        if (errorCode is not null)
+        {
+            trailers.Add("runtime-error-code", errorCode);
+        }
+
+        var rpcException = new RpcException(new Status(statusCode, detail), trailers);
+        var transport = new FakeGrpcTransport { GenerateException = rpcException };
+        var client = new GrpcLlamaRuntimeClient(RuntimeName, NullLogger<GrpcLlamaRuntimeClient>.Instance, transport);
+
+        var act = async () => await client.GenerateAsync("req_123", "prompt", null, CancellationToken.None);
+
+        var exception = await act.Should().ThrowAsync<GenProxy.Api.Integrations.Contracts.LlamaRuntimeCallException>();
+        exception.Which.InnerException.Should().BeSameAs(rpcException);
     }
 
     [Fact]
@@ -403,6 +448,99 @@ public class GrpcLlamaRuntimeClientTests
         exception.Which.Message.Should().Be("Failed to generate against the test runtime.");
         exception.Which.InnerException.Should().BeOfType<HttpRequestException>();
     }
+
+    [Theory]
+    [MemberData(nameof(RuntimeOperationOutcomes))]
+    public async Task RuntimeOperation_PreservesErrorAndMetricSemantics(string operation, string outcome)
+    {
+        var runtimeName = $"metrics-{Guid.NewGuid():N}";
+        using var cancellation = new CancellationTokenSource();
+        Exception? original = outcome switch
+        {
+            "success" => null,
+            "http_failure" => new HttpRequestException("offline"),
+            "timeout" or "canceled" => new RpcException(new Status(StatusCode.DeadlineExceeded, "deadline expired")),
+            _ => new RpcException(new Status(StatusCode.Unavailable, "offline"))
+        };
+        if (outcome == "canceled")
+        {
+            cancellation.Cancel();
+        }
+
+        var transport = new FakeGrpcTransport
+        {
+            EstimateException = original,
+            CapabilitiesException = original,
+            GenerateException = original
+        };
+        var client = new GrpcLlamaRuntimeClient(runtimeName, NullLogger<GrpcLlamaRuntimeClient>.Instance, transport);
+        var failures = 0L;
+        var durations = new List<double>();
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument.Meter.Name == "GenProxy.Api")
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, value, tags, _) =>
+        {
+            if (instrument.Name == "genproxy.upstream.failures" &&
+                tags.ToArray().Any(tag => tag.Key == "runtime" && Equals(tag.Value, runtimeName)))
+            {
+                failures += value;
+            }
+        });
+        listener.SetMeasurementEventCallback<double>((instrument, value, tags, _) =>
+        {
+            if (instrument.Name == "genproxy.upstream.duration_ms" &&
+                tags.ToArray().Any(tag => tag.Key == "runtime" && Equals(tag.Value, runtimeName)))
+            {
+                tags.ToArray().Should().Contain(tag => tag.Key == "operation" && Equals(tag.Value, operation));
+                durations.Add(value);
+            }
+        });
+        listener.Start();
+        Func<Task> call = () => operation switch
+        {
+            "estimate_tokens" => client.EstimateTokensAsync("prompt", cancellation.Token),
+            "get_capabilities" => client.GetCapabilitiesAsync(cancellation.Token),
+            _ => client.GenerateAsync("req_123", "prompt", null, cancellation.Token)
+        };
+
+        if (outcome == "success")
+        {
+            await call();
+            durations.Should().ContainSingle().Which.Should().BeGreaterThanOrEqualTo(0);
+        }
+        else
+        {
+            var failure = await call.Should().ThrowAsync<Exception>();
+            failure.Which.InnerException.Should().BeSameAs(original);
+            if (outcome == "canceled")
+            {
+                failure.Which.Should().BeOfType<OperationCanceledException>()
+                    .Which.CancellationToken.Should().Be(cancellation.Token);
+            }
+            else if (outcome == "timeout")
+            {
+                failure.Which.Should().BeOfType<LlamaRuntimeTimeoutException>();
+            }
+            else
+            {
+                failure.Which.Should().BeOfType<LlamaRuntimeCallException>();
+                failure.Which.Message.Should().Be($"Failed to {operation.Replace('_', ' ')} against the {runtimeName} runtime.");
+            }
+            durations.Should().BeEmpty();
+        }
+        failures.Should().Be(outcome is "success" or "canceled" ? 0 : 1);
+    }
+
+    public static IEnumerable<object[]> RuntimeOperationOutcomes() =>
+        from operation in new[] { "estimate_tokens", "get_capabilities", "generate" }
+        from outcome in new[] { "success", "rpc_failure", "http_failure", "timeout", "canceled" }
+        select new object[] { operation, outcome };
 
     [Fact]
     public void GenerationRuntimeOptions_BindsApiKeyFromConfiguration()

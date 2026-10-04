@@ -8,110 +8,83 @@ using System.Diagnostics;
 
 namespace GenProxy.Api.Integrations.Implementation.Clients;
 
-public sealed class GrpcLlamaRuntimeClient : ILlamaRuntimeClient
+public sealed class GrpcLlamaRuntimeClient : ILlamaRuntimeClient, IDisposable
 {
     private const string PromptBudgetExceededMarker = "Prompt exceeds input budget";
     private const string RuntimeErrorCodeTrailerName = "runtime-error-code";
     private const string StructuredOutputNotSatisfiedDetail = "Inference did not return a valid JSON object.";
+    private const string StructuredOutputFailedCode = "structured_output_failed";
     private const string InvalidArgumentCode = "invalid_argument";
     private const string UnsupportedGenerationOverridesCode = "unsupported_generation_overrides";
     private readonly IGrpcLlamaTransport _transport;
     private readonly string _runtimeName;
     private readonly ILogger<GrpcLlamaRuntimeClient> _logger;
+    private IDisposable? _ownedTransport;
 
     public GrpcLlamaRuntimeClient(string runtimeName, string address, ILogger<GrpcLlamaRuntimeClient> logger, string? apiKey = null, RuntimeTimeoutOptions? timeouts = null)
-        : this(runtimeName, logger, new GrpcLlamaTransport(address, apiKey, timeouts))
+        : this(runtimeName, logger, new GrpcLlamaTransport(address, apiKey, timeouts), ownsTransport: true)
     {
     }
 
-    internal GrpcLlamaRuntimeClient(string runtimeName, ILogger<GrpcLlamaRuntimeClient> logger, IGrpcLlamaTransport transport)
+    internal GrpcLlamaRuntimeClient(string runtimeName, ILogger<GrpcLlamaRuntimeClient> logger, IGrpcLlamaTransport transport, bool ownsTransport = false)
     {
         _runtimeName = runtimeName;
         _logger = logger;
         _transport = transport;
+        _ownedTransport = ownsTransport ? transport as IDisposable : null;
     }
+
+    public void Dispose() => Interlocked.Exchange(ref _ownedTransport, null)?.Dispose();
 
     public async Task<TokenEstimation> EstimateTokensAsync(string prompt, CancellationToken cancellationToken)
     {
-        var stopwatch = Stopwatch.StartNew();
+        var (reply, durationMs) = await CallAsync(
+            "estimate_tokens",
+            "estimate tokens",
+            () => _transport.EstimateTokensAsync(new EstimateTokensRequest { Prompt = prompt }, cancellationToken),
+            cancellationToken,
+            TryCreatePromptBudgetExceededException);
 
-        try
-        {
-            var reply = await _transport.EstimateTokensAsync(
-                new EstimateTokensRequest { Prompt = prompt },
-                cancellationToken: cancellationToken);
+        _logger.LogInformation(
+            "Upstream token estimation completed. Runtime={Runtime} TokenCount={TokenCount} Fits={Fits} DurationMs={DurationMs}",
+            _runtimeName,
+            reply.TokenCount,
+            reply.Fits,
+            durationMs);
 
-            stopwatch.Stop();
-            RecordUpstreamLatency("estimate_tokens", stopwatch.Elapsed);
-            _logger.LogInformation(
-                "Upstream token estimation completed. Runtime={Runtime} TokenCount={TokenCount} Fits={Fits} DurationMs={DurationMs}",
-                _runtimeName,
-                reply.TokenCount,
-                reply.Fits,
-                stopwatch.Elapsed.TotalMilliseconds);
-
-            return new TokenEstimation(
-                reply.TokenCount,
-                reply.ContextSize,
-                reply.ReservedOutputTokens,
-                reply.MaxAllowedInputTokens,
-                reply.Fits);
-        }
-        catch (RpcException exception)
-        {
-            stopwatch.Stop();
-            throw HandleRpcException("estimate tokens", exception, cancellationToken, TryCreatePromptBudgetExceededException);
-        }
-        catch (HttpRequestException exception)
-        {
-            stopwatch.Stop();
-            RecordUpstreamFailure();
-            throw CreateUpstreamException("estimate tokens", exception);
-        }
+        return new TokenEstimation(
+            reply.TokenCount,
+            reply.ContextSize,
+            reply.ReservedOutputTokens,
+            reply.MaxAllowedInputTokens,
+            reply.Fits);
     }
 
     public async Task<LlamaCapabilities> GetCapabilitiesAsync(CancellationToken cancellationToken)
     {
-        var stopwatch = Stopwatch.StartNew();
+        var (reply, durationMs) = await CallAsync(
+            "get_capabilities",
+            "get capabilities",
+            () => _transport.GetCapabilitiesAsync(new GetCapabilitiesRequest(), cancellationToken),
+            cancellationToken);
 
-        try
-        {
-            var reply = await _transport.GetCapabilitiesAsync(
-                new GetCapabilitiesRequest(),
-                cancellationToken);
+        var capabilities = new LlamaCapabilities(
+            reply.ModelId,
+            reply.ContextSize,
+            reply.SupportsStructuredOutput,
+            reply.SupportsJsonOutput,
+            reply.SupportsSpeculativeDecoding,
+            reply.TokenizerFamily);
 
-            stopwatch.Stop();
-            RecordUpstreamLatency("get_capabilities", stopwatch.Elapsed);
+        _logger.LogInformation(
+            "Upstream capability fetch completed. Runtime={Runtime} ModelId={ModelId} StructuredOutput={SupportsStructuredOutput} JsonOutput={SupportsJsonOutput} DurationMs={DurationMs}",
+            _runtimeName,
+            capabilities.ModelId,
+            capabilities.SupportsStructuredOutput,
+            capabilities.SupportsJsonOutput,
+            durationMs);
 
-            var capabilities = new LlamaCapabilities(
-                reply.ModelId,
-                reply.ContextSize,
-                reply.SupportsStructuredOutput,
-                reply.SupportsJsonOutput,
-                reply.SupportsSpeculativeDecoding,
-                reply.TokenizerFamily);
-
-            _logger.LogInformation(
-                "Upstream capability fetch completed. Runtime={Runtime} ModelId={ModelId} StructuredOutput={SupportsStructuredOutput} JsonOutput={SupportsJsonOutput} DurationMs={DurationMs}",
-                _runtimeName,
-                capabilities.ModelId,
-                capabilities.SupportsStructuredOutput,
-                capabilities.SupportsJsonOutput,
-                stopwatch.Elapsed.TotalMilliseconds);
-
-            return capabilities;
-        }
-        catch (RpcException exception)
-        {
-            stopwatch.Stop();
-            throw HandleRpcException("get capabilities", exception, cancellationToken);
-        }
-        catch (HttpRequestException exception)
-        {
-            stopwatch.Stop();
-            RecordUpstreamFailure();
-            throw CreateUpstreamException("get capabilities", exception);
-        }
+        return capabilities;
     }
 
     public async Task<LlamaGenerationResult> GenerateAsync(
@@ -120,100 +93,108 @@ public sealed class GrpcLlamaRuntimeClient : ILlamaRuntimeClient
         LlamaGenerationOptions? options,
         CancellationToken cancellationToken)
     {
+        var request = new GenerateRequest
+        {
+            RequestId = requestId,
+            Prompt = prompt
+        };
+
+        if (options?.ResponseFormat is LlamaResponseFormatType configuredResponseFormat)
+        {
+            request.ResponseFormat = new ResponseFormat
+            {
+                Type = configuredResponseFormat switch
+                {
+                    LlamaResponseFormatType.Text => "text",
+                    LlamaResponseFormatType.JsonSchema => "json",
+                    _ => throw new InvalidOperationException($"Unsupported runtime response format '{configuredResponseFormat}'.")
+                }
+            };
+
+            if (configuredResponseFormat == LlamaResponseFormatType.JsonSchema &&
+                !string.IsNullOrWhiteSpace(options.JsonSchema))
+            {
+                request.ResponseFormat.JsonSchema = options.JsonSchema;
+            }
+        }
+
+        if (options?.MaxOutputTokens is not null ||
+            options?.Temperature is not null ||
+            options?.TopP is not null)
+        {
+            request.Generation = new GenerationOptions();
+
+            if (options?.MaxOutputTokens is int configuredMaxOutputTokens)
+            {
+                request.Generation.MaxOutputTokens = configuredMaxOutputTokens;
+            }
+
+            if (options?.Temperature is float configuredTemperature)
+            {
+                request.Generation.Temperature = configuredTemperature;
+            }
+
+            if (options?.TopP is float configuredTopP)
+            {
+                request.Generation.TopP = configuredTopP;
+            }
+        }
+
+        var (reply, durationMs) = await CallAsync(
+            "generate",
+            "generate",
+            () => _transport.GenerateAsync(request, cancellationToken),
+            cancellationToken,
+            TryCreatePromptBudgetExceededException,
+            TryCreateUnsupportedGenerationOverridesException,
+            TryCreateInvalidArgumentException,
+            TryCreateStructuredOutputNotSatisfiedException);
+
+        _logger.LogInformation(
+            "Upstream generation completed. Runtime={Runtime} RequestId={RequestId} DurationMs={DurationMs}",
+            _runtimeName,
+            requestId,
+            durationMs);
+
+        return new LlamaGenerationResult(
+            reply.RequestId,
+            reply.Model,
+            reply.Content,
+            reply.Usage is null
+                ? null
+                : new LlamaUsage(reply.Usage.InputTokens, reply.Usage.OutputTokens, reply.Usage.TotalTokens),
+            reply.RuntimeTrace is null
+                ? null
+                : new LlamaRuntimeTrace(
+                    reply.RuntimeTrace.StructuredOutputApplied,
+                    reply.RuntimeTrace.StructuredOutputSatisfied,
+                    reply.RuntimeTrace.SpeculativeDecodingUsed));
+    }
+
+    private async Task<(TReply Reply, double DurationMs)> CallAsync<TReply>(
+        string operation,
+        string operationDescription,
+        Func<Task<TReply>> call,
+        CancellationToken cancellationToken,
+        params Func<RpcException, Exception?>[] translators)
+    {
         var stopwatch = Stopwatch.StartNew();
 
         try
         {
-            var request = new GenerateRequest
-            {
-                RequestId = requestId,
-                Prompt = prompt
-            };
-
-            if (options?.ResponseFormat is LlamaResponseFormatType configuredResponseFormat)
-            {
-                request.ResponseFormat = new ResponseFormat
-                {
-                    Type = configuredResponseFormat switch
-                    {
-                        LlamaResponseFormatType.Text => "text",
-                        LlamaResponseFormatType.JsonSchema => "json",
-                        _ => throw new InvalidOperationException($"Unsupported runtime response format '{configuredResponseFormat}'.")
-                    }
-                };
-
-                if (configuredResponseFormat == LlamaResponseFormatType.JsonSchema &&
-                    !string.IsNullOrWhiteSpace(options.JsonSchema))
-                {
-                    request.ResponseFormat.JsonSchema = options.JsonSchema;
-                }
-            }
-
-            if (options?.MaxOutputTokens is not null ||
-                options?.Temperature is not null ||
-                options?.TopP is not null)
-            {
-                request.Generation = new GenerationOptions();
-
-                if (options?.MaxOutputTokens is int configuredMaxOutputTokens)
-                {
-                    request.Generation.MaxOutputTokens = configuredMaxOutputTokens;
-                }
-
-                if (options?.Temperature is float configuredTemperature)
-                {
-                    request.Generation.Temperature = configuredTemperature;
-                }
-
-                if (options?.TopP is float configuredTopP)
-                {
-                    request.Generation.TopP = configuredTopP;
-                }
-            }
-
-            var reply = await _transport.GenerateAsync(
-                request,
-                cancellationToken: cancellationToken);
-
+            var reply = await call();
             stopwatch.Stop();
-            RecordUpstreamLatency("generate", stopwatch.Elapsed);
-            _logger.LogInformation(
-                "Upstream generation completed. Runtime={Runtime} RequestId={RequestId} DurationMs={DurationMs}",
-                _runtimeName,
-                requestId,
-                stopwatch.Elapsed.TotalMilliseconds);
-
-            return new LlamaGenerationResult(
-                reply.RequestId,
-                reply.Model,
-                reply.Content,
-                reply.Usage is null
-                    ? null
-                    : new LlamaUsage(reply.Usage.InputTokens, reply.Usage.OutputTokens, reply.Usage.TotalTokens),
-                reply.RuntimeTrace is null
-                    ? null
-                    : new LlamaRuntimeTrace(
-                        reply.RuntimeTrace.StructuredOutputApplied,
-                        reply.RuntimeTrace.StructuredOutputSatisfied,
-                        reply.RuntimeTrace.SpeculativeDecodingUsed));
+            RecordUpstreamLatency(operation, stopwatch.Elapsed);
+            return (reply, stopwatch.Elapsed.TotalMilliseconds);
         }
         catch (RpcException exception)
         {
-            stopwatch.Stop();
-            throw HandleRpcException(
-                "generate",
-                exception,
-                cancellationToken,
-                TryCreatePromptBudgetExceededException,
-                TryCreateUnsupportedGenerationOverridesException,
-                TryCreateInvalidArgumentException,
-                TryCreateStructuredOutputNotSatisfiedException);
+            throw HandleRpcException(operationDescription, exception, cancellationToken, translators);
         }
         catch (HttpRequestException exception)
         {
-            stopwatch.Stop();
             RecordUpstreamFailure();
-            throw CreateUpstreamException("generate", exception);
+            throw CreateUpstreamException(operationDescription, exception);
         }
     }
 
@@ -330,7 +311,16 @@ public sealed class GrpcLlamaRuntimeClient : ILlamaRuntimeClient
 
     private LlamaRuntimeStructuredOutputNotSatisfiedException? TryCreateStructuredOutputNotSatisfiedException(RpcException exception)
     {
-        if (exception.StatusCode != StatusCode.Internal ||
+        if (exception.StatusCode != StatusCode.Internal)
+        {
+            return null;
+        }
+
+        var errorCode = exception.Trailers
+            .FirstOrDefault(entry => string.Equals(entry.Key, RuntimeErrorCodeTrailerName, StringComparison.Ordinal))
+            ?.Value;
+
+        if (!string.Equals(errorCode, StructuredOutputFailedCode, StringComparison.Ordinal) &&
             !string.Equals(exception.Status.Detail, StructuredOutputNotSatisfiedDetail, StringComparison.Ordinal))
         {
             return null;

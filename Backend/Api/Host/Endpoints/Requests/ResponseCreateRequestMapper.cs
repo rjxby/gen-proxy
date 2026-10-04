@@ -12,7 +12,6 @@ public static class ResponseCreateRequestMapper
             request.MaxOutputTokens,
             request.Temperature,
             request.TopP,
-            request.Metadata,
             MapResponseFormat(request.ResponseFormat?.Type),
             MapJsonSchema(request.ResponseFormat));
     }

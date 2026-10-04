@@ -13,8 +13,6 @@ public sealed class PromptReductionPipeline(IEnumerable<IPromptReducer> reducers
     {
         cancellationToken.ThrowIfCancellationRequested();
         var currentPrompt = prompt;
-        var wasReduced = false;
-        var strategy = PromptReductionStrategy.None;
 
         foreach (var reducer in _reducers)
         {
@@ -23,16 +21,12 @@ public sealed class PromptReductionPipeline(IEnumerable<IPromptReducer> reducers
             cancellationToken.ThrowIfCancellationRequested();
             currentPrompt = result.Prompt;
 
-            if (!result.WasReduced)
+            if (result.WasReduced)
             {
-                continue;
+                return result;
             }
-
-            wasReduced = true;
-            strategy = result.Strategy;
-            break;
         }
 
-        return new PromptReductionResult(currentPrompt, wasReduced, strategy);
+        return new PromptReductionResult(currentPrompt, false, PromptReductionStrategy.None);
     }
 }

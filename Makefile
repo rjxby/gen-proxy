@@ -3,9 +3,19 @@ SHELL := /bin/bash
 
 ENV_FILE ?= .env
 
+# Local app settings must not override test-host configuration.
+ifeq ($(filter verify verify-fast,$(MAKECMDGOALS)),)
 ifneq (,$(wildcard $(ENV_FILE)))
 include $(ENV_FILE)
+endif
+
+# Prompt text is data. Freeze its raw value before make expands exported variables.
+override PROMPT := $(value PROMPT)
+
+ifneq (,$(wildcard $(ENV_FILE)))
 export $(shell sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' $(ENV_FILE))
+endif
+
 endif
 
 DOTNET_PROJECT := Backend/Api/Host/GenProxy.Api.Host.csproj
@@ -39,7 +49,9 @@ help:
 		'  make stack-run  Start local runtimes, run gen-proxy, clean up on exit' \
 		'  make demo       Send a manual demo request to a running local gen-proxy stack' \
 		'  make smoke      Start the local stack, run basic smoke checks, clean up' \
-		'  make smoke-budget  Start a constrained local stack and run budget smoke checks'
+		'  make smoke-budget  Start a constrained local stack and run budget smoke checks' \
+		'  make verify-fast   Build and run affected deterministic checks' \
+		'  make verify        Run all deterministic checks and build local tools'
 
 run:
 	@set -euo pipefail; \
@@ -73,20 +85,13 @@ stack-run:
 		SUMMARIZER_CONTEXT_SIZE="$(SUMMARIZER_CONTEXT_SIZE)" \
 		dotnet run --project "$(STACK_RUNNER_PROJECT)" -- stack-run
 
+demo: export GEN_PROXY_DEMO_PROMPT := $(PROMPT)
 demo:
-ifeq ($(strip $(PROMPT)),)
 	@env \
 		GEN_PROXY_BASE_URL="$(GEN_PROXY_BASE_URL)" \
 		GEN_PROXY_API_KEY="$(PUBLIC_API_KEY)" \
 		MAIN_MODEL_ID="$(MAIN_MODEL_ID)" \
 		./scripts/demo-request.sh $(DEMO_REQUEST_ARGS)
-else
-	@env \
-		GEN_PROXY_BASE_URL="$(GEN_PROXY_BASE_URL)" \
-		GEN_PROXY_API_KEY="$(PUBLIC_API_KEY)" \
-		MAIN_MODEL_ID="$(MAIN_MODEL_ID)" \
-		./scripts/demo-request.sh $(DEMO_REQUEST_ARGS) "$(PROMPT)"
-endif
 
 smoke:
 	@env \
@@ -139,3 +144,11 @@ smoke-budget:
 		SUMMARIZER_CONTEXT_SIZE="$(SUMMARIZER_CONTEXT_SIZE)" \
 		SMOKE_SUMMARIZER_CONTEXT_SIZE="$(SMOKE_SUMMARIZER_CONTEXT_SIZE)" \
 		dotnet run --project "$(STACK_RUNNER_PROJECT)" -- smoke budget
+
+# Deterministic checks do not start inference servers.
+.PHONY: verify-fast verify
+verify-fast:
+	python3 scripts/verify.py --fast $(if $(VERIFY_BASE),--base "$(VERIFY_BASE)")
+
+verify:
+	python3 scripts/verify.py

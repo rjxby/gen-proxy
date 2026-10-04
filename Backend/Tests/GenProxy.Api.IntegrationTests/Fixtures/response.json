@@ -1,0 +1,27 @@
+{
+  "id": "\u003Cresponse-id\u003E",
+  "object": "response",
+  "created_at": 0,
+  "status": "completed",
+  "model": "contract-model",
+  "output": [
+    {
+      "id": "\u003Cmessage-id\u003E",
+      "type": "message",
+      "status": "completed",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "contract output"
+        }
+      ]
+    }
+  ],
+  "output_text": "contract output",
+  "usage": {
+    "input_tokens": 3,
+    "output_tokens": 4,
+    "total_tokens": 7
+  }
+}

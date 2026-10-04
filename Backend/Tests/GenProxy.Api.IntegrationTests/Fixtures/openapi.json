@@ -1,0 +1,202 @@
+{
+  "openapi": "3.0.4",
+  "info": {
+    "title": "Gen Proxy Responses API",
+    "description": "Public Responses API backed by llama runtime token budgeting and generation.",
+    "version": "v1"
+  },
+  "paths": {
+    "/v1/responses": {
+      "post": {
+        "tags": [
+          "Responses"
+        ],
+        "summary": "Create a response from the configured generation runtime.",
+        "description": "Accepts a Responses-compatible request body. \u0060model\u0060 is required. \u0060input\u0060 supports exactly one user message with \u0060type: message\u0060 and one or more \u0060input_text\u0060 content parts. Top-level string input is not supported. \u0060response_format.type\u0060 supports \u0060text\u0060 and \u0060json_schema\u0060. \u0060json_schema\u0060 response formats are forwarded to the runtime as schema-constrained structured JSON output. \u0060temperature\u0060, \u0060top_p\u0060, and \u0060max_output_tokens\u0060 are forwarded to the runtime, and support for those fields is runtime-defined. The current local \u0060llama-runtime\u0060 stack uses greedy decoding and only accepts \u0060max_output_tokens\u0060 when it matches the runtime\u0027s configured \u0060GenerationMaxNewTokens\u0060. Multi-turn structured input, \u0060tools\u0060, \u0060tool_choice\u0060, and streaming are not supported yet.",
+        "operationId": "CreateResponse",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResponseCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "JsonSchemaResponseFormatRequest": {
+        "required": [
+          "name"
+        ],
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "nullable": true
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "schema": {
+            "nullable": true
+          },
+          "strict": {
+            "type": "boolean",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "ResponseCreateRequest": {
+        "required": [
+          "input",
+          "model"
+        ],
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "nullable": true
+          },
+          "input": {
+            "maxItems": 1,
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResponseInputMessageRequest"
+            },
+            "nullable": true
+          },
+          "response_format": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ResponseFormatRequest"
+              }
+            ],
+            "description": "Optional response format override. When provided, type is required."
+          },
+          "max_output_tokens": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "temperature": {
+            "type": "number",
+            "format": "float",
+            "nullable": true
+          },
+          "top_p": {
+            "type": "number",
+            "format": "float",
+            "nullable": true
+          },
+          "stream": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "tools": {
+            "nullable": true
+          },
+          "tool_choice": {
+            "nullable": true
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "ResponseFormatRequest": {
+        "required": [
+          "type"
+        ],
+        "type": "object",
+        "properties": {
+          "type": {
+            "enum": [
+              "text",
+              "json_schema"
+            ],
+            "type": "string"
+          },
+          "json_schema": {
+            "$ref": "#/components/schemas/JsonSchemaResponseFormatRequest"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ResponseInputContentPartRequest": {
+        "required": [
+          "text",
+          "type"
+        ],
+        "type": "object",
+        "properties": {
+          "type": {
+            "enum": [
+              "input_text"
+            ],
+            "type": "string"
+          },
+          "text": {
+            "type": "string",
+            "description": "Must be a non-empty string.",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "ResponseInputMessageRequest": {
+        "required": [
+          "content",
+          "role",
+          "type"
+        ],
+        "type": "object",
+        "properties": {
+          "type": {
+            "enum": [
+              "message"
+            ],
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "user"
+            ],
+            "type": "string"
+          },
+          "content": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResponseInputContentPartRequest"
+            },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "Responses"
+    }
+  ]
+}

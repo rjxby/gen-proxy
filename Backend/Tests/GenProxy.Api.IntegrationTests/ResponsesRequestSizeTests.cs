@@ -194,14 +194,11 @@ public class ResponsesRequestSizeTests
                 "resp_size_test",
                 command.Model,
                 "generated text",
-                command.Input,
                 false,
                 PromptReductionStrategy.None,
                 2,
                 2,
                 4,
-                1024,
-                512,
                 512,
                 DateTimeOffset.UtcNow));
         }

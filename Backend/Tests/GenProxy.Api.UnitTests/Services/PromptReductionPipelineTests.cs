@@ -104,6 +104,27 @@ public class PromptReductionPipelineTests
         await act.Should().ThrowAsync<InvalidOperationException>();
     }
 
+    [Fact]
+    public async Task ReduceAsync_WhenNoReducerReportsReduction_PassesAlongPromptAndReturnsNoStrategy()
+    {
+        var pipeline = new PromptReductionPipeline(
+        [
+            new TestPromptReducer("first", 100, (_, _, _) =>
+                Task.FromResult(new PromptReductionResult("updated prompt", false, PromptReductionStrategy.LlmSummarizer))),
+            new TestPromptReducer("second", 200, (prompt, _, _) =>
+            {
+                prompt.Should().Be("updated prompt");
+                return Task.FromResult(new PromptReductionResult(prompt, false, PromptReductionStrategy.LeadingTruncation));
+            })
+        ]);
+
+        var result = await pipeline.ReduceAsync("prompt", 100, CancellationToken.None);
+
+        result.Prompt.Should().Be("updated prompt");
+        result.WasReduced.Should().BeFalse();
+        result.Strategy.Should().Be(PromptReductionStrategy.None);
+    }
+
     private sealed class TestPromptReducer(
         string name,
         int order,

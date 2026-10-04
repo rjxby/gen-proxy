@@ -222,7 +222,7 @@ public sealed class ResponseCreateRequestValidator : AbstractValidator<ResponseC
             return;
         }
 
-        var contentTexts = new List<string>(message.Content.Count);
+        long promptLength = message.Content.Count - 1;
         for (var contentIndex = 0; contentIndex < message.Content.Count; contentIndex++)
         {
             var contentPart = message.Content[contentIndex];
@@ -248,7 +248,7 @@ public sealed class ResponseCreateRequestValidator : AbstractValidator<ResponseC
                 continue;
             }
 
-            contentTexts.Add(contentPart.Text);
+            promptLength += contentPart.Text.Length;
         }
 
         if (!isValid)
@@ -256,8 +256,7 @@ public sealed class ResponseCreateRequestValidator : AbstractValidator<ResponseC
             return;
         }
 
-        var prompt = string.Join('\n', contentTexts);
-        if (prompt.Length > maxInputCharacters)
+        if (promptLength > maxInputCharacters)
         {
             context.AddFailure("input", $"Input must be at most {maxInputCharacters} characters after normalization.");
         }

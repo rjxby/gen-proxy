@@ -196,6 +196,39 @@ public class ResponseCreateRequestValidatorTests
         result.Errors.Should().Contain(error => error.PropertyName == "input");
     }
 
+    [Theory]
+    [InlineData(11, true, "hello", "world")]
+    [InlineData(10, false, "hello", "world")]
+    [InlineData(2, true, "\U0001F680")]
+    [InlineData(1, false, "\U0001F680")]
+    [InlineData(5, true, "a\nb", "c")]
+    [InlineData(4, false, "a\nb", "c")]
+    public async Task ValidateAsync_WhenCheckingNormalizedLength_CountsTextAndSeparators(
+        int maxInputCharacters,
+        bool expectedValid,
+        params string[] texts)
+    {
+        var validator = new ResponseCreateRequestValidator(Options.Create(new RequestLimitsOptions
+        {
+            MaxInputCharacters = maxInputCharacters
+        }));
+
+        var result = await validator.ValidateAsync(new ResponseCreateRequest
+        {
+            Model = "stories15m",
+            Input = CreateInput(texts)
+        });
+
+        result.IsValid.Should().Be(expectedValid);
+        if (!expectedValid)
+        {
+            result.Errors.Should().ContainSingle()
+                .Which.PropertyName.Should().Be("input");
+            result.Errors[0].ErrorMessage.Should().Be(
+                $"Input must be at most {maxInputCharacters} characters after normalization.");
+        }
+    }
+
     [Fact]
     public async Task ValidateAsync_WhenMetadataHasTooManyEntries_ReturnsError()
     {
